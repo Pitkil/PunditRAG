@@ -1,0 +1,13 @@
+.git
+.history
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.docker
+temp-files
+cache
+models
+data
