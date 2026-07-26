@@ -14,6 +14,8 @@ cache/
 data/
 logs/
 temp-files/
+doc/
+output/
 
 models/
 
