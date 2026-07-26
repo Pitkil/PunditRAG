@@ -102,7 +102,52 @@ def fix_log_position(record):
 # 应用终极修复，导出全局可用的logger
 logger = base_logger.patch(fix_log_position)
 
-# -------------------------- 测试代码（验证修复效果） --------------------------
-if __name__ == '__main__':
-    logger.info("【测试】logger.py内部调用（仅测试，业务模块调用会显示正确文件名）")
-    print(f"日志文件输出路径：{LOG_FILE_PATH}")
+
+from functools import wraps
+import time
+from typing import Mapping
+
+def _trace_id(state) -> str:
+    if isinstance(state, Mapping):
+        return str(state.get("session_id") or state.get("task_id") or "-")
+    return "-"
+
+def node_log(node_name: str):
+    def deco(func):
+        @wraps(func)
+        def wrapper(state, *args, **kwargs):
+            trace_id = _trace_id(state)
+            start_ts = time.time()
+            logger.info(f"[{node_name}] 节点开始，追踪ID={trace_id}")
+            try:
+                result = func(state, *args, **kwargs)
+                cost_ms = int((time.time() - start_ts) * 1000)
+                logger.info(f"[{node_name}] 节点完成，追踪ID={trace_id}，耗时={cost_ms}ms")
+                return result
+            except Exception:
+                logger.exception(f"[{node_name}] 节点异常，追踪ID={trace_id}")
+                raise
+        return wrapper
+    return deco
+
+def step_log(step_name: str):
+    """
+    步骤日志装饰器：
+    - 自动打印 步骤开始 / 步骤完成 / 步骤异常（含堆栈）
+    - 不吞异常，保持原有业务语义
+    """
+    def deco(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_ts = time.time()
+            logger.info(f"[{step_name}] 步骤开始")
+            try:
+                result = func(*args, **kwargs)
+                cost_ms = int((time.time() - start_ts) * 1000)
+                logger.info(f"[{step_name}] 步骤完成，耗时={cost_ms}ms")
+                return result
+            except Exception:
+                logger.exception(f"[{step_name}] 步骤异常")
+                raise
+        return wrapper
+    return deco
