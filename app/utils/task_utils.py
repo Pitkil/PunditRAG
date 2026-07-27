@@ -178,8 +178,6 @@ def task_push_queue(task_id: str):
         "running_list": get_running_task_list(task_id),
     })
 
-
-#
 def clear_task(task_id: str):
     _tasks_running_list.pop(task_id, None)
     _tasks_done_list.pop(task_id, None)

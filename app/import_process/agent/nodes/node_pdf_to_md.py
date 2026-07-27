@@ -92,7 +92,7 @@ def step_2(pdf_path_obj) -> str:
       result_dict = response.json()
       if result_dict['code'] != 0:
         
-        logger.err(f"申请地址网络状态成功!但是业务失败!错误码:{result_dict['code']},失败信息:{result_dict['msg']}")
+        logger.error(f"申请地址网络状态成功!但是业务失败!错误码:{result_dict['code']},失败信息:{result_dict['msg']}")
         raise RuntimeError(f"申请地址网络状态成功!但是业务失败!错误码:{result_dict['code']},失败信息:{result_dict['msg']}")
 
       file_upload_url = result_dict['data']['file_urls'][0]

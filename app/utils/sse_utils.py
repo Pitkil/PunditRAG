@@ -1,3 +1,6 @@
+'''
+实现了轻量级、基于内存的会话级 SSE 推送框架, 。
+'''
 import json
 import queue
 import asyncio
@@ -13,43 +16,56 @@ class SSEEvent:
     ERROR = "error"         # 错误信息
     CLOSE = "__close__"     # 关闭连接信号
 
-
 # 全局 SSE 会话队列存储
 # Key: session_id, Value: queue.Queue
 _session_stream: Dict[str, queue.Queue] = {}
 
-def get_sse_queue(session_id: str) -> Optional["queue.Queue"]:
-    """获取指定 session 的队列"""
-    return _session_stream.get(session_id)
+def get_sse_queue(session_id:str)->Optional[queue.Queue]:
+    """
+    获取指定 session_id 的 SSE 队列。
+    如果不存在，则返回 None。
+    """
+    return _session_stream.get(session_id)\
 
-def create_sse_queue(session_id: str) -> "queue.Queue":
-    """创建并注册一个新的 SSE 队列"""
+def create_sse_queue(session_id:str)->queue.Queue:
+    """
+    创建一个新的 SSE 队列，并存储在全局字典中。
+    """
     print(f"[SSE] Creating queue for session: {session_id}")
     q = queue.Queue()
     _session_stream[session_id] = q
     return q
 
-def remove_sse_queue(session_id: str):
-    """移除指定 session 的队列"""
-    print(f"[SSE] Removing queue for session: {session_id}")
-    _session_stream.pop(session_id, None)
+def remove_sse_queue(session_id:str):
+    """
+    ：从全局字典里删除指定会话的队列，即注销该 SSE 会话。
+    """
+    if session_id in _session_stream:
+        print(f"[SSE] Removing queue for session: {session_id}")
+        _session_stream.pop(session_id, None)
 
 def _sse_pack(event: str, data: Dict[str, Any]) -> str:
-    """打包 SSE 消息格式"""
+    """
+    把事件名和数据字典序列化成标准 SSE 文本格式.
+    """
     payload = json.dumps(data, ensure_ascii=False)
-    # print(f"[SSE] Packing event: {event}, payload: {payload[:50]}...")
+    print(f"[SSE] Packing event: {event}, payload: {payload[:50]}...")
     return f"event: {event}\ndata: {payload}\n\n"
 
-def push_to_session(session_id: str, event: str, data: Dict[str, Any]):
+def push_to_session(session_id:str, event_type:str, data:Any):
     """
-    通过 session_id 推送事件
+    向指定 session_id 的 SSE 队列中推送事件。
     """
-    stream_queue = get_sse_queue(session_id)
-    if stream_queue:
-        # print(f"[SSE] Pushing to session {session_id}: {event}")
-        stream_queue.put({"event": event, "data": data})
+    q = get_sse_queue(session_id)
+    if q:
+        event = {
+            "event": event_type,
+            "data": data
+        }
+        print(f"[SSE] Pushing to session {session_id}: {event}")
+        q.put(event)
     else:
-        print(f"[SSE] Warning: No queue found for session {session_id} when pushing {event}")
+        print(f"[SSE] No queue found for session: {session_id}")
 
 async def sse_generator(session_id: str, request: Request):
     """
@@ -85,7 +101,7 @@ async def sse_generator(session_id: str, request: Request):
             event = msg.get("event")
             data = msg.get("data")
             
-            # print(f"[SSE] Yielding event {event} for {session_id}")
+            print(f"[SSE] Yielding event {event} for {session_id}")
 
             # 特殊关闭事件
             if event == "__close__":

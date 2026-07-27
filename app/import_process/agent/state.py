@@ -63,6 +63,7 @@ def create_default_state(**overrides) -> ImportGraphState:
     # 用 overrides 覆盖默认值
     state.update(**overrides)
     # 返回创建好的状态字典实例
+    
     return state
 
 def get_default_state() -> ImportGraphState:
@@ -70,11 +71,3 @@ def get_default_state() -> ImportGraphState:
     返回一个新的状态实例，避免全局变量污染
     """
     return copy.deepcopy(graph_default_state)
-
-if __name__ == "__main__":
-    """
-    测试
-    """
-    # 创建默认状态
-    state = create_default_state(local_file_path="万用表RS-12的使用.pdf")
-    logger.info(state)
