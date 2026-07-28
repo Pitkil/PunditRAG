@@ -12,7 +12,7 @@ from app.clients.minio_utils import get_minio_client
 from app.conf.minio_config import minio_config
 from app.conf.llm_config import llm_config
 from app.core.load_prompt import load_prompt
-from app.core.logger import logger, node_log
+from app.core.logger import logger, node_log, step_log
 from app.import_process.agent.state import ImportGraphState
 from app.llm.llm_util import get_llm_client
 from app.utils.rate_limit_utils import apply_api_rate_limit
@@ -20,12 +20,14 @@ from app.utils.task_utils import add_done_task, add_running_task
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 from langchain_core.output_parsers import StrOutputParser
 
+
 def is_supported_image(filename:str):
      '''
      判断文件是否为MinIO支持的图片格式
      '''
      return os.path.splitext(filename)[1].lower() in IMAGE_EXTENSIONS
 
+@step_log("step_1")
 def step_1(state:ImportGraphState)->Tuple[str,Path,Path]:
     md_content = state["md_content"]
     md_path = state['md_path']
@@ -45,7 +47,7 @@ def step_1(state:ImportGraphState)->Tuple[str,Path,Path]:
 
     return md_content,md_path_obj,images_path_obj
 
-
+@step_log("step_2")
 def step_2(md_content:str,images_path_obj:Path)->List[Tuple[str,str,Tuple[str,str]]]:
     image_context_list = []
     #逐个读取图片文件夹里的每一个文件
@@ -68,6 +70,7 @@ def step_2(md_content:str,images_path_obj:Path)->List[Tuple[str,str,Tuple[str,st
         image_context_list.append((image_name,str(image_file),(pre_content,pos_content)))
     return image_context_list
 
+@step_log("step_3")
 def step_3(image_context_list, stem) -> Dict[str,str]:
     image_summary_dict = {}
 
@@ -96,6 +99,7 @@ def step_3(image_context_list, stem) -> Dict[str,str]:
 
     return image_summary_dict
 
+@step_log("step_4")
 def step_4(image_context_list, image_summaries_dict, md_content, stem) -> str:
      minio_client = get_minio_client()
      image_root_dir = str(minio_config.minio_img_dir or "").strip("/")
@@ -159,6 +163,7 @@ def step_4(image_context_list, image_summaries_dict, md_content, stem) -> str:
 
      return md_content
 
+@step_log("step_5")
 def step_5(new_md_content, md_path_obj) -> str:
     """
     将新的md_content内容写入到本地磁盘! xx.md xx_new.md
