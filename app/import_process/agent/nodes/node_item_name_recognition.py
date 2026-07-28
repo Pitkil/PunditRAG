@@ -7,7 +7,7 @@ from pymilvus import DataType
 from app.clients.milvus_utils import get_milvus_client
 from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
-from app.core.logger import logger, node_log
+from app.core.logger import logger, node_log, step_log
 from app.import_process.agent.state import ImportGraphState
 from app.llm.embedding_utils import generate_embeddings
 from app.llm.llm_util import get_llm_client
@@ -20,6 +20,7 @@ DEFAULT_ITEM_NAME_CHUNK_K = 5
 # 大模型上下文总字符数上限：适配主流大模型输入限制，默认2500
 CONTEXT_TOTAL_MAX_CHARS = 10000
 
+@step_log("step_1")
 def step_1(state):
     chunks = state['chunks']
     file_title = state['file_title']
@@ -33,6 +34,7 @@ def step_1(state):
         file_title = "default_title"
     return chunks,file_title
 
+@step_log("step_2")
 def step_2(chunks)->str:
     '''
     获得某个文档的上下文
@@ -46,6 +48,7 @@ def step_2(chunks)->str:
     final_chunk_str = chunk_str[:CONTEXT_TOTAL_MAX_CHARS]
     return final_chunk_str
 
+@step_log("step_3")
 def step_3(context,file_title)->str:
     '''
     调用大模型
@@ -70,6 +73,7 @@ def step_3(context,file_title)->str:
 
     return item_name  
 
+@step_log("step_4")
 def step_4(item_name, file_title, dense_vector, sparse_vector):
     '''
     存入milvus
@@ -131,11 +135,6 @@ def step_4(item_name, file_title, dense_vector, sparse_vector):
             }
         ]
     milvus_client.insert(collection_name=milvus_config.item_name_collection , data=data)
-
-    
-
-            
-    
 
 @node_log("node_item_name_recognition")
 def node_item_name_recognition(state: ImportGraphState) -> ImportGraphState:
