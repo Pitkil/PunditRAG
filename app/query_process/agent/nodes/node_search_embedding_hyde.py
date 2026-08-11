@@ -1,0 +1,85 @@
+import sys
+from langchain_core.messages import HumanMessage
+from langchain_core.output_parsers import StrOutputParser
+from app.utils.task_utils import add_running_task, add_done_task
+from app.llm.llm_util import *
+from app.llm.embedding_utils import *
+from app.clients.milvus_utils import *
+from app.core.logger import logger, node_log, step_log
+from app.core.load_prompt import load_prompt
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
+
+@step_log("step_1_data_validates")
+def step_1_data_validates(state):
+    """
+    获取参数并校验
+    """
+    item_names = state.get("item_names") or []
+    rewritten_query = state.get("rewritten_query")
+    if not item_names or not rewritten_query:
+        logger.error("item_names 和 rewritten_query 都不能为空")
+        raise ValueError("item_names 和 rewritten_query 都不能为空")
+    return item_names, rewritten_query
+
+@step_log("step_2_call_llm")
+def step_2_call_llm(rewritten_query):
+    """
+     调用llm模型,给出普通回答
+    """
+    llm_client = get_llm_client()
+    prompt = load_prompt("hyde_prompt", rewritten_query=rewritten_query)
+    messages = [
+        HumanMessage(content=prompt)
+    ]
+    llm_chains = llm_client | StrOutputParser()
+    hyde_answer = llm_chains.invoke(messages)
+    return hyde_answer
+
+@step_log("step_3_rewritten_hyde_vector")
+def step_3_rewritten_hyde_vector(rewritten_query, hyde_answer):
+    """
+     将问题和hyde回答拼接并进行向量化
+    """
+    vector_str = rewritten_query + " ," + hyde_answer
+    result = generate_embeddings([vector_str])
+    return result['dense'][0],result['sparse'][0]
+
+@step_log("step_4_mivlus_hybrid_search")
+def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names):
+    """
+     混合搜索步骤:
+        1. 创建对应AnnSearchRequest
+        2. 定义对应reranker
+        3. 调用混合检索方法
+    """
+    milvus_client = get_milvus_client()
+    #过滤表达式
+    expr_str = f"item_name in {item_names}"
+    #生成 Milvus 混合检索所需的请求对象列表
+    reqs = create_hybrid_search_requests(dense_vector, sparse_vector, expr=expr_str)
+    # 调用混合检索
+    response = hybrid_search(
+        client = milvus_client,
+        collection_name = milvus_config.chunks_collection,
+        reqs = reqs,
+        norm_score = True,
+        limit = 5,
+        output_fields=["chunk_id","item_name","content","title","parent_title","part","file_title"]
+    )
+    return response[0] if response and len(response) > 0 else []
+
+@node_log(node_name="node_search_embedding_hyde")
+def node_search_embedding_hyde(state):
+    """
+    节点功能：HyDE (Hypothetical Document Embedding)
+    先让 LLM 生成假设性答案，再对答案进行向量检索，提高召回率。
+    """
+    add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
+    item_names, rewritten_query = step_1_data_validates(state)
+    hyde_answer = step_2_call_llm(rewritten_query)
+    dense_vector,sparse_vector = step_3_rewritten_hyde_vector(rewritten_query, hyde_answer)
+    milvus_result = step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names)
+    add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
+    return {"hyde_embedding_chunks": milvus_result}
