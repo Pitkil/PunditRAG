@@ -9,12 +9,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.core.logger import logger
 from app.query_process.agent.nodes.node_search_embedding_hyde import (
     node_search_embedding_hyde,
+    step_1_data_validates,
 )
 from app.query_process.agent.state import create_query_default_state
 
 
 if __name__ == "__main__":
     """HyDE 假设文档向量检索节点本地集成测试。"""
+    item_names, rewritten_query = step_1_data_validates(
+        {"item_names": [], "rewritten_query": "全库检索测试"}
+    )
+    assert item_names == [] and rewritten_query == "全库检索测试"
     test_state = create_query_default_state(
         session_id=f"test_search_embedding_hyde_{uuid4().hex}",
         original_query="RS-12数字万用表怎么测量电压？",

@@ -52,7 +52,7 @@ def step_2_merged_rrf_and_mcp(rrf_chunks, web_search_docs):
             final_list.append(
                {
                 "title":doc.get("title"),
-                "text":doc.get("content"),
+                "text":doc.get("content") or doc.get("snippet") or "",
                 "url":doc.get("url"),
                 "type":"web",
                 "score":0.0
@@ -117,7 +117,13 @@ def node_rerank(state):
     add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
     rrf_chunks, web_search_docs = step_1_data_validates(state)
     final_chunk_list = step_2_merged_rrf_and_mcp(rrf_chunks,web_search_docs)
+    if not final_chunk_list:
+        state["reranked_docs"] = []
+        state["answer"] = "没有检索到足够的相关资料，暂时无法基于知识库回答这个问题。"
+        add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
+        return state
     final_chunk_list_score_sorted = step_3_rerank_score_and_sort(state,final_chunk_list)
     final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted)
+    state["reranked_docs"] = final_chunk_list_score_sorted_topk
     add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
     return state

@@ -12,12 +12,12 @@ from app.clients.milvus_utils import (
 from app.clients.mongo_history_utils import get_recent_messages, save_chat_message
 from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
-from app.core.logger import logger
+from app.core.logger import logger, node_log, step_log
 from app.llm.embedding_utils import generate_embeddings
 from app.llm.llm_util import get_llm_client
 from app.utils.task_utils import add_done_task, add_running_task
 
-
+@step_log("node_item_name_confirm")
 def step_1_data_validates(state):
     """校验并返回会话 ID 和原始问题。"""
     original_query = state.get("original_query")
@@ -27,12 +27,12 @@ def step_1_data_validates(state):
         raise ValueError("original_query 和 session_id 不能为空")
     return original_query, session_id
 
-
+@step_log("step_2_chat_history")
 def step_2_chat_history(session_id):
     """获取当前会话的最近聊天记录。"""
     return get_recent_messages(session_id)
 
-
+@step_log("step_3_llm_itemnames_and_rewrite")
 def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
     """结合历史对话识别主题或实体，并将问题改写为独立查询。"""
     history_lines = []
@@ -74,7 +74,7 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
         "item_names": list(dict.fromkeys(str(name).strip() for name in item_names if str(name).strip())),
     }
 
-
+@step_log("step_4_vector_query_item_name")
 def step_4_vector_query_item_name(item_names):
     """在主题名称集合中查找与用户问题相关的已导入资料。"""
     if not item_names:
@@ -120,7 +120,7 @@ def step_4_vector_query_item_name(item_names):
         vector_dict[item_name] = candidates
     return vector_dict
 
-
+@step_log("step_5_select_item_list")
 def step_5_select_item_list(vector_dict):
     """按相似度划分已确认资料与待确认资料。"""
     confirmed_item_names = []
@@ -145,7 +145,7 @@ def step_5_select_item_list(vector_dict):
         "options_item_name_list": list(dict.fromkeys(optional_item_names)),
     }
 
-
+@step_log("step_6_deal_state")
 def step_6_deal_state(state, final_result, rewritten_query):
     """确定检索范围；无明确范围时允许后续节点执行全库检索。"""
     confirmed_names = final_result.get("confirmed_item_name_list", [])
@@ -163,7 +163,7 @@ def step_6_deal_state(state, final_result, rewritten_query):
         option_text = "、".join(optional_names)
         state["answer"] = f"检索到多个可能相关的资料主题：{option_text}。请说明你想查询哪一个。"
 
-
+@step_log("step_7_save_user_chat_message")
 def step_7_save_user_chat_message(state):
     """保存本次用户问题及查询理解结果。"""
     save_chat_message(
@@ -174,7 +174,7 @@ def step_7_save_user_chat_message(state):
         item_names=state["item_names"],
     )
 
-
+@node_log("node_item_name_confirm")
 def node_item_name_confirm(state):
     """识别查询主题、匹配资料范围并保存用户消息。"""
     session_id = state.get("session_id")

@@ -125,8 +125,8 @@ def get_recent_messages(session_id: str, limit: int = 10) -> List[Dict[str, Any]
     try:
         #查询的是当前会话
         query = {"session_id":session_id}
-        cursor = mongo_tool.chat_message.find(query).sort("ts", ASCENDING).limit(limit)
-        messages = list(cursor)
+        cursor = mongo_tool.chat_message.find(query).sort("ts", -1).limit(limit)
+        messages = list(reversed(list(cursor)))
         return messages
     except Exception as e:
         logging.error(f"Error getting recent messages: {e}")

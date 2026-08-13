@@ -124,6 +124,8 @@ def test_node_rerank_full():
 
     assert isinstance(result_state, dict), "主函数应返回 state 字典"
     assert result_state["session_id"], "state 中应保留 session_id"
+    assert result_state["reranked_docs"], "重排序结果应写回 reranked_docs"
+    assert result_state["reranked_docs"][0]["score"] == 0.9
     logger.info(f"rerank 全流程跑通，候选输入 5 条，返回 state 正常")
 
 

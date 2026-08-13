@@ -1,3 +1,4 @@
+import json
 import sys
 
 import numpy as np
@@ -122,7 +123,10 @@ def step_4(item_name, file_title, dense_vector, sparse_vector):
             index_params = index_params,
         )
     #删除旧数据
-    milvus_client.delete(milvus_config.item_name_collection ,filter=f"item_name == '{item_name}'")
+    milvus_client.delete(
+        milvus_config.item_name_collection,
+        filter=f"file_title == {json.dumps(file_title, ensure_ascii=False)}",
+    )
     #存储数据
     normalized_dense_vector = np.asarray(dense_vector, dtype=np.float16)
 

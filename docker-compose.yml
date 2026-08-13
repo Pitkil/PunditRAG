@@ -12,6 +12,11 @@ services:
     gpus: all
     ports:
       - "8000:8000"
+      - "8001:8001"
+    command:
+      - sh
+      - -c
+      - uvicorn app.import_process.agent.api.server:app --host 0.0.0.0 --port 8000 & uvicorn app.query_process.api.server:app --host 0.0.0.0 --port 8001 & wait
     volumes:
       - ./temp-files:/app/temp-files
       - ./models:/app/models

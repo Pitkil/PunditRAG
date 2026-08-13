@@ -72,7 +72,7 @@ def step_2(md_content: str, file_title: str) -> List[Dict[str, str]]:
         else:
             current_lines.append(line)
 
-    if current_lines:
+    if current_lines and len(current_lines) > 1:
         chunks.append(
             {
                 "content": "\n".join(current_lines).strip(),

@@ -36,8 +36,8 @@ def step_2(chunks):
                 chunk_new['sparse_vector'] = vectors['sparse'][i]
                 chunks_vector.append(chunk_new)
         except Exception as e:
-            logger.warning(f"index = {index} 步骤，发生错误，跳过！")
-            continue
+            logger.exception(f"index = {index} 批次向量生成失败，终止导入，避免部分数据入库")
+            raise RuntimeError(f"第 {index // step + 1} 批切片向量生成失败") from e
 
     return chunks_vector 
 

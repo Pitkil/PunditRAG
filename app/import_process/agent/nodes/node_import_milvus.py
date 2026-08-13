@@ -1,3 +1,4 @@
+import json
 import sys
 from pymilvus import DataType
 from app.clients.milvus_utils import get_milvus_client
@@ -62,15 +63,15 @@ def step_2():
 def step_3(state):
      '''
      删除旧数据
-     同一个文档的切块item_name一致
+     同一个文档按 file_title 幂等更新，避免同主题的不同文档互相覆盖
      '''
      milvus_client = get_milvus_client()
      if not milvus_client:
                  logger.error("无法连接到 Milvus 数据库，获取 client 失败！")
                  raise ValueError("无法连接到 Milvus 数据库，获取 client 失败！")
-     item_name = state['item_name']
+     file_title = state['file_title']
      milvus_client.delete(milvus_config.chunks_collection,
-                         filter=f"item_name=='{item_name}'")
+                         filter=f"file_title == {json.dumps(file_title, ensure_ascii=False)}")
 
 @step_log("step_4")
 def step_4(chunks):
@@ -93,7 +94,7 @@ def node_import_milvus(state: ImportGraphState) -> ImportGraphState:
     """
     实现:
     1. 连接 Milvus。
-    2. 根据 item_name 删除旧数据。
+    2. 根据 file_title 删除同一文档的旧数据。
     3. 批量插入新的向量数据。
     """ 
     add_running_task(state['task_id'],"node_import_milvus")

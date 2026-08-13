@@ -1,3 +1,4 @@
+import json
 import sys
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -18,9 +19,9 @@ def step_1_data_validates(state):
     """
     item_names = state.get("item_names") or []
     rewritten_query = state.get("rewritten_query")
-    if not item_names or not rewritten_query:
-        logger.error("item_names 和 rewritten_query 都不能为空")
-        raise ValueError("item_names 和 rewritten_query 都不能为空")
+    if not rewritten_query:
+        logger.error("rewritten_query 不能为空")
+        raise ValueError("rewritten_query 不能为空")
     return item_names, rewritten_query
 
 @step_log("step_2_call_llm")
@@ -55,8 +56,10 @@ def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names):
         3. 调用混合检索方法
     """
     milvus_client = get_milvus_client()
+    if not milvus_client:
+        raise ValueError("无法连接到 Milvus 数据库")
     #过滤表达式
-    expr_str = f"item_name in {item_names}"
+    expr_str = f"item_name in {json.dumps(item_names, ensure_ascii=False)}" if item_names else None
     #生成 Milvus 混合检索所需的请求对象列表
     reqs = create_hybrid_search_requests(dense_vector, sparse_vector, expr=expr_str)
     # 调用混合检索

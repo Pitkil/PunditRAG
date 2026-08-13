@@ -149,7 +149,9 @@ def hybrid_search(client, collection_name, reqs, ranker_weights=(0.5, 0.5), norm
     :return: 混合搜索结果列表，失败返回None
     """
     try:
+        #待会两边搜出来的结果，左边乘以 0.5，右边乘以 0.5，最后加起来算总分
         rerank = WeightedRanker(ranker_weights[0], ranker_weights[1], norm_score=norm_score)
+        #如果调用者没指定要返回什么数据，默认只把item_name从数据库里打包带回来
         if output_fields is None:
             output_fields = ["item_name"]
 
