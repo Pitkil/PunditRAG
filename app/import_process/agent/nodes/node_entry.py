@@ -2,6 +2,7 @@ from pathlib import Path
 from app.core.logger import logger, node_log
 from app.import_process.agent.state import ImportGraphState, create_default_state
 from app.utils.task_utils import add_running_task, add_done_task
+from app.import_process.agent.nodes.node_file_to_md import SUPPORTED_CONVERT_EXTENSIONS
 
 @node_log("node_entry")#一个自定义装饰器，用来给这个节点自动记录日志
 def node_entry(state: ImportGraphState) -> ImportGraphState:
@@ -26,18 +27,22 @@ def node_entry(state: ImportGraphState) -> ImportGraphState:
           #文件为空，降级处理
           logger.warning(f"节点:node_entry,获取文件输入地址,发现地址为空!直接跳转到END节点")
           return state
-     elif local_file_path.endswith(".md"):
+     local_file_path_obj = Path(local_file_path)
+     suffix = local_file_path_obj.suffix.lower()
+     state["source_file_type"] = suffix
+
+     if suffix == ".md":
           state["md_path"] = local_file_path
           state["is_md_read_enabled"] = True
-     elif local_file_path.endswith(".pdf"):
+     elif suffix == ".pdf":
           state["pdf_path"] = local_file_path
           state["is_pdf_read_enabled"] = True
+     elif suffix in SUPPORTED_CONVERT_EXTENSIONS:
+          state["is_file_convert_enabled"] = True
      else:
-          logger.warning(f"虽然local_file_path有值{local_file_path},但是无法识别类型，跳转到END节点")
-          return state
+          raise ValueError(f"暂不支持该文件类型：{suffix or '无扩展名'}")
 
      # 将字符串路径转换为 pathlib.Path 对象，方便进行路径与文件名操作
-     local_file_path_obj = Path(local_file_path)
      # 获取剥离后缀后的纯文件名（例如 'C:/docs/report.pdf' -> 'report'）
      file_name = local_file_path_obj.stem 
 

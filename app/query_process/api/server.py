@@ -1,25 +1,41 @@
-from mimetypes import guess_type
-from pathlib import Path
+import os
 import uuid
+from mimetypes import guess_type
+from threading import Lock
+
 import uvicorn
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
-from app.clients.mongo_history_utils import clear_history as clear_chat_history
+
 from app.clients.mongo_history_utils import get_recent_messages
+from app.clients.mongo_workspace_utils import (
+    delete_chat_session,
+    ensure_chat_session,
+    list_chat_sessions,
+    rename_chat_session,
+)
 from app.core.logger import PROJECT_ROOT, logger
-
-from app.query_process.agent.state import create_query_default_state
-from app.utils.task_utils import *
-from app.utils.sse_utils import create_sse_queue, SSEEvent, sse_generator
 from app.query_process.agent.main_graph import query_app
+from app.query_process.agent.state import create_query_default_state
+from app.utils.sse_utils import SSEEvent, create_sse_queue, push_to_session, sse_generator
+from app.utils.task_utils import (
+    TASK_STATUS_COMPLETED,
+    TASK_STATUS_FAILED,
+    TASK_STATUS_PROCESSING,
+    clear_task,
+    get_done_task_list,
+    get_running_task_list,
+    get_task_result,
+    get_task_status,
+    get_task_trace,
+    set_task_result,
+    update_task_status,
+)
 
 
-# 定义fastapi对象
-app = FastAPI(title="query service", description="掌柜智库查询服务！")
-
-# 跨域配置
+app = FastAPI(title="PunditRAG query service", description="知识库查询与会话服务")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,102 +43,138 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_active_runs: dict[str, set[str]] = {}
+_active_runs_lock = Lock()
+
+
+def _register_run(session_id: str, run_id: str) -> None:
+    with _active_runs_lock:
+        _active_runs.setdefault(session_id, set()).add(run_id)
+
+
+def _finish_run(session_id: str, run_id: str) -> None:
+    with _active_runs_lock:
+        runs = _active_runs.get(session_id)
+        if not runs:
+            return
+        runs.discard(run_id)
+        if not runs:
+            _active_runs.pop(session_id, None)
+
+
+def _session_is_running(session_id: str) -> bool:
+    with _active_runs_lock:
+        return bool(_active_runs.get(session_id))
+
+
 @app.get("/")
 def index():
     return RedirectResponse(url="/query/html")
 
+
 @app.get("/query/html")
 def return_query_html():
-    html_path_obj = PROJECT_ROOT / "app" / "query_process" / "page" / "chat.html"
-    if not html_path_obj.exists():
-        logger.error(f"没有找到对应的前端文件,返回404异常!")
-        raise HTTPException(status_code=404, detail="没有找到对应的前端文件")
-    return FileResponse(
-        path=html_path_obj,
-        media_type = guess_type(html_path_obj.name)[0],
-    )
+    html_path = PROJECT_ROOT / "app" / "query_process" / "page" / "chat.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="未找到问答页面")
+    return FileResponse(path=html_path, media_type=guess_type(html_path.name)[0])
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# 定义接口接收的数据结构
+
 class QueryRequest(BaseModel):
-    """查询请求数据结构"""
-    query: str = Field(..., description="查询内容")
-    session_id: str | None = Field(None, description="会话ID")
+    query: str = Field(..., min_length=1, description="查询内容")
+    session_id: str | None = Field(None, description="会话 ID")
+    kb_ids: list[str] = Field(default_factory=list, description="知识库 ID 列表")
     is_stream: bool = Field(False, description="是否流式返回")
+    enable_web_search: bool = Field(True, description="是否启用联网搜索")
 
-def run_query_graph(session_id: str, query: str, is_stream: bool):
+
+def run_query_graph(
+    session_id: str,
+    run_id: str,
+    query: str,
+    kb_ids: list[str],
+    is_stream: bool,
+    enable_web_search: bool,
+):
     try:
-        #清空缓存
-        clear_task(session_id)
-        
-        update_task_status(session_id, TASK_STATUS_PROCESSING, is_stream)
-        initial_state = create_query_default_state(session_id=session_id, original_query=query, is_stream=is_stream)
+        clear_task(run_id)
+        ensure_chat_session(session_id, query)
+        update_task_status(run_id, TASK_STATUS_PROCESSING, is_stream)
+        initial_state = create_query_default_state(
+            session_id=session_id,
+            run_id=run_id,
+            original_query=query,
+            kb_ids=kb_ids,
+            is_stream=is_stream,
+            enable_web_search=enable_web_search,
+        )
         final_state = query_app.invoke(initial_state)
-        update_task_status(session_id, TASK_STATUS_COMPLETED, is_stream) 
-        #final事件一定最后推送，因为会关闭本次连接流
-        push_to_session(
-                    session_id,
-                    SSEEvent.FINAL,
-                    {
-                        "answer": get_task_result(session_id, "answer"),
-                        "status": "completed",
-                        "image_urls": final_state.get("image_urls", [])
-                    }
-                )
-        return final_state
-    except Exception as e:
-        logger.exception(f"task_id={session_id}任务的查询流程发生异常!{str(e)}")
-        error_message = str(e)
-        set_task_result(session_id, "error", error_message)
-        update_task_status(session_id, TASK_STATUS_FAILED, is_stream)
+        update_task_status(run_id, TASK_STATUS_COMPLETED, is_stream)
         if is_stream:
-            push_to_session(session_id, SSEEvent.ERROR, {"error": error_message})
+            push_to_session(
+                run_id,
+                SSEEvent.FINAL,
+                {
+                    "answer": final_state.get("answer", ""),
+                    "status": "completed",
+                    "image_urls": final_state.get("image_urls", []),
+                    "sources": final_state.get("sources", []),
+                },
+            )
+        return final_state
+    except Exception as exc:
+        logger.exception(f"session_id={session_id} run_id={run_id} 查询失败：{exc}")
+        set_task_result(run_id, "error", str(exc))
+        update_task_status(run_id, TASK_STATUS_FAILED, is_stream)
+        if is_stream:
+            push_to_session(run_id, SSEEvent.ERROR, {"error": str(exc)})
         return None
+    finally:
+        _finish_run(session_id, run_id)
 
-#触发查询流程
+
 @app.post("/query")
-async def query(req: QueryRequest,background_tasks: BackgroundTasks):
-    """
-    /query
-    作用：触发查询流程的执行  query_graph的执行.... (意图确认 / 多路召回 / 粗排序 / 精排序 / 结果输出...)
-    形式：is_stream = true 异步执行以上过程    is_stream = false 同步执行以上过程
-    过程：
-        1. 获取了核心参数 is_stream | session_id | query
-        2. 判断是否是流式
-           是
-               [也]要执行main_graph [2]
-               接口 backgroundtask.add_task(执行main_graph)  提取一个函数
-               组装json
-               return
-           否
-               直接执行main_graph [1]   直接写
-               并获取结果
-               组装json即可
-               return
-        3.因为异步和同步都需要执行main_grap,所以我们将执行过程提取出去
-"""
-    is_stream  =   req.is_stream
+async def query(req: QueryRequest, background_tasks: BackgroundTasks):
     session_id = req.session_id or str(uuid.uuid4())
-    query = req.query
+    run_id = str(uuid.uuid4())
+    _register_run(session_id, run_id)
+    if req.is_stream:
+        create_sse_queue(run_id)
+        background_tasks.add_task(
+            run_query_graph,
+            session_id,
+            run_id,
+            req.query,
+            req.kb_ids,
+            True,
+            req.enable_web_search,
+        )
+        return {"message": "结果正在输出", "session_id": session_id, "run_id": run_id}
 
-    if is_stream:
-        create_sse_queue(session_id)
-        background_tasks.add_task(run_query_graph, session_id, query, is_stream)
-        return  {"messages":"结果正在输出...","session_id":session_id}
-    else:
-        final_state = run_query_graph(session_id, query, is_stream)
-        answer = get_task_result(session_id,"answer")
-        return {
-            "messages": "处理完成!" if final_state is not None else "处理失败!",
-            "session_id": session_id,
-            "answer": answer,
-            "error": get_task_result(session_id, "error"),
-            "image_urls": final_state.get("image_urls", []) if final_state else [],
-            "done_list": get_done_task_list(session_id),
-        }
+    final_state = run_query_graph(
+        session_id,
+        run_id,
+        req.query,
+        req.kb_ids,
+        False,
+        req.enable_web_search,
+    )
+    return {
+        "message": "处理完成" if final_state is not None else "处理失败",
+        "session_id": session_id,
+        "run_id": run_id,
+        "answer": final_state.get("answer", "") if final_state else "",
+        "error": get_task_result(run_id, "error"),
+        "image_urls": final_state.get("image_urls", []) if final_state else [],
+        "sources": final_state.get("sources", []) if final_state else [],
+        "done_list": get_done_task_list(run_id),
+    }
+
 
 @app.get("/status/{task_id}")
 def get_query_status(task_id: str):
@@ -133,55 +185,83 @@ def get_query_status(task_id: str):
         "error": get_task_result(task_id, "error"),
         "done_list": get_done_task_list(task_id),
         "running_list": get_running_task_list(task_id),
+        "trace": get_task_trace(task_id),
     }
 
-#流式获取接口
-@app.get("/query/stream/{session_id}")
-async def stream_query_result(session_id: str, request: Request):
-    """
-    /query/stream/{session_id}
-    作用：流式获取查询结果
-    过程：
-        1. 获取session_id
-        2. 调用sse_generator(session_id) 生成器
-        3. StreamingResponse返回
-    """
+
+@app.get("/query/stream/{run_id}")
+async def stream_query_result(run_id: str, request: Request):
     return StreamingResponse(
-        sse_generator(session_id, request), 
-        media_type="text/event-stream")
+        sse_generator(run_id, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
-#查询历史聊天记录
+
 @app.get("/history/{session_id}")
-def get_history(session_id:str,limit = 10):
-   message_list =  get_recent_messages(session_id, limit)
-   formatted_messages = []
-  # MongoDB 的主键 _id 在数据库内部是一个特殊的 ObjectId 对象，而不是字符串。
-   for m in message_list:
-       formatted_messages.append({
-           "_id": str(m.get("_id")) if m.get("_id") is not None else "",
-            "session_id": m.get("session_id", ""),
-            "role": m.get("role", ""),
-            "text": m.get("text", ""),
-            "rewritten_query": m.get("rewritten_query", ""),
-            "item_names": m.get("item_names", []),
-            "ts": m.get("ts")
-       })
-       
-   return {"session_id": session_id,"messages":formatted_messages}
+def get_history(session_id: str, limit: int = 50):
+    messages = []
+    for item in get_recent_messages(session_id, limit):
+        messages.append(
+            {
+                "_id": str(item.get("_id", "")),
+                "session_id": item.get("session_id", ""),
+                "role": item.get("role", ""),
+                "text": item.get("text", ""),
+                "rewritten_query": item.get("rewritten_query", ""),
+                "item_names": item.get("item_names", []),
+                "image_urls": item.get("image_urls", []),
+                "sources": item.get("sources", []),
+                "ts": item.get("ts"),
+            }
+        )
+    return {"session_id": session_id, "messages": messages}
 
-#清空历史聊天记录
-@app.delete("/history/{session_id}")
-@app.get("/history/{session_id}/clear")
-def clear_history_endpoint(session_id:str):
-    deleted_count = clear_chat_history(session_id)
+
+class SessionPayload(BaseModel):
+    title: str = Field("新对话", min_length=1, max_length=80)
+
+
+@app.get("/sessions")
+def get_sessions():
+    return {"items": list_chat_sessions()}
+
+
+@app.post("/sessions")
+def create_session(payload: SessionPayload):
+    return ensure_chat_session(str(uuid.uuid4()), payload.title)
+
+
+@app.patch("/sessions/{session_id}")
+def edit_session(session_id: str, payload: SessionPayload):
+    result = rename_chat_session(session_id, payload.title)
+    if not result:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return result
+
+
+@app.delete("/sessions/{session_id}")
+def remove_session(session_id: str):
+    if _session_is_running(session_id):
+        raise HTTPException(status_code=409, detail="该会话正在生成答案，请完成后再删除")
+    delete_chat_session(session_id)
+    return {"deleted": True, "session_id": session_id}
+
+
+@app.get("/settings/status")
+def settings_status():
     return {
-        "messages": f"已清空会话 {session_id} 的历史记录，共删除 {deleted_count} 条记录。",
-        "deleted_count": deleted_count
+        "llm": bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL")),
+        "milvus": bool(os.getenv("MILVUS_URL")),
+        "mongo": bool(os.getenv("MONGO_URL")),
+        "minio": bool(os.getenv("MINIO_ENDPOINT")),
+        "web_search": bool(
+            os.getenv("MCP_DASHSCOPE_BASE_URL") and os.getenv("OPENAI_API_KEY")
+        ),
+        "model": os.getenv("LLM_DEFAULT_MODEL", "未配置"),
+        "embedding_model": os.getenv("BGE_M3_PATH", os.getenv("BGE_M3", "BGE-M3")),
     }
+
 
 if __name__ == "__main__":
-    uvicorn.run(
-        app, 
-        host="0.0.0.0",
-        port=8001,
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8001)

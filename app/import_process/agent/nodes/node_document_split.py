@@ -157,6 +157,9 @@ def node_document_split(state: ImportGraphState) -> ImportGraphState:
     md_content, file_title = step_1(state)
     chunks = step_2(md_content, file_title)
     chunks = step_3(chunks)
+    for chunk in chunks:
+        chunk["kb_id"] = state.get("kb_id", "")
+        chunk["document_id"] = state.get("document_id", "")
     step_5(chunks, state["md_path"])
     state["chunks"] = chunks
     add_done_task(state["task_id"], "node_document_split")

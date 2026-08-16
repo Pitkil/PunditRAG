@@ -4,6 +4,7 @@ from app.core.logger import logger
 from app.import_process.agent.state import ImportGraphState, create_default_state
 from app.import_process.agent.nodes.node_entry import node_entry  
 from app.import_process.agent.nodes.node_pdf_to_md import node_pdf_to_md 
+from app.import_process.agent.nodes.node_file_to_md import node_file_to_md
 from app.import_process.agent.nodes.node_md_img import node_md_img  
 from app.import_process.agent.nodes.node_document_split import node_document_split  
 from app.import_process.agent.nodes.node_item_name_recognition import node_item_name_recognition  
@@ -18,6 +19,7 @@ workflow = StateGraph(ImportGraphState)
 #2.添加节点
 workflow.add_node("node_entry", node_entry)
 workflow.add_node("node_pdf_to_md", node_pdf_to_md)
+workflow.add_node("node_file_to_md", node_file_to_md)
 workflow.add_node("node_md_img", node_md_img)
 workflow.add_node("node_document_split", node_document_split)
 workflow.add_node("node_item_name_recognition", node_item_name_recognition)
@@ -33,6 +35,8 @@ def after_entry_node(state: ImportGraphState):
         return "node_md_img"
     elif state['is_pdf_read_enabled']:
         return "node_pdf_to_md"
+    elif state['is_file_convert_enabled']:
+        return "node_file_to_md"
     else:
         return END
 '''
@@ -44,6 +48,7 @@ workflow.add_conditional_edges(
     {
         "node_md_img": "node_md_img",
         "node_pdf_to_md": "node_pdf_to_md",
+        "node_file_to_md": "node_file_to_md",
         END: END,
     },
 )
@@ -51,6 +56,7 @@ workflow.add_conditional_edges(
 #4.设置静态条件边
 workflow.add_edge("node_md_img","node_document_split")
 workflow.add_edge("node_pdf_to_md","node_document_split")
+workflow.add_edge("node_file_to_md","node_md_img")
 workflow.add_edge("node_document_split","node_item_name_recognition")
 workflow.add_edge("node_item_name_recognition","node_bge_embedding")
 workflow.add_edge("node_bge_embedding","node_import_milvus")

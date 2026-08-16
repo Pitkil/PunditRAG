@@ -9,10 +9,14 @@ class ImportGraphState(TypedDict):
     使用字典式访问（如state["session_id"]、state.get("embedding_chunks")）
     """
     task_id: str          # 任务唯一ID，用于追踪日志
+    kb_id: str            # 所属知识库 ID
+    document_id: str      # 文档元数据 ID
 
     # --- 流程控制标记 ---
     is_md_read_enabled: bool   # 是否启用 Markdown 读取路径
     is_pdf_read_enabled: bool  # 是否启用 PDF 读取路径
+    is_file_convert_enabled: bool  # 是否启用通用文件转换路径
+    source_file_type: str      # 原始文件扩展名
 
     # --- 路径相关 ---
     local_dir: str        # 当前工作目录或输出目录
@@ -34,8 +38,12 @@ class ImportGraphState(TypedDict):
 # 定义图状态的默认初始值
 graph_default_state: ImportGraphState = {
     "task_id":"",
+    "kb_id": "",
+    "document_id": "",
     "is_pdf_read_enabled": False,
     "is_md_read_enabled": False,
+    "is_file_convert_enabled": False,
+    "source_file_type": "",
     "local_dir": "",
     "local_file_path": "",
     "pdf_path": "",

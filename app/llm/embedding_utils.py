@@ -1,9 +1,14 @@
+from pathlib import Path
+from threading import Lock
+
+from huggingface_hub import snapshot_download
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from app.core.logger import logger
 from app.conf.embedding_config import embedding_config
 
 # 模型单例对象，避免重复初始化
 bge_m3_ef = None
+_bge_m3_lock = Lock()
 
 def get_bge_m3_ef():
     global bge_m3_ef
@@ -11,34 +16,64 @@ def get_bge_m3_ef():
         logger.debug("BGE-M3模型单例已存在，直接返回实例")
         return bge_m3_ef
 
-    model_name = embedding_config.bge_m3_path
-    device = embedding_config.bge_device
-    use_fp16 = embedding_config.bge_fp16
+    with _bge_m3_lock:
+        if bge_m3_ef is not None:
+            return bge_m3_ef
 
-    # 打印模型初始化配置，便于问题排查
-    logger.info(
-        "开始初始化BGE-M3模型",
-        extra={
-            "model_name": model_name,
-            "device": device,
-            "use_fp16": use_fp16,
-            "normalize_embeddings": True
-        }
-    )
-
-    try:
-        # 初始化BGE-M3模型，开启原生L2归一化（适配Milvus IP内积检索）
-        bge_m3_ef = BGEM3EmbeddingFunction(
-            model_name=model_name,
-            device=device,
-            use_fp16=use_fp16,
-            normalize_embeddings=True  # 模型原生对稠密+稀疏向量做L2归一化
+        local_path = embedding_config.bge_m3_path.strip()
+        repository_id = embedding_config.bge_m3.strip()
+        local_dir = Path(local_path) if local_path else None
+        local_weights = (
+            local_dir
+            and local_dir.is_dir()
+            and any((local_dir / name).is_file() for name in ("pytorch_model.bin", "model.safetensors"))
         )
-        logger.success("BGE-M3模型初始化成功，已开启原生L2归一化")
-        return bge_m3_ef
-    except Exception as e:
-        logger.error(f"BGE-M3模型初始化失败：{str(e)}", exc_info=True)
-        raise  # 向上抛出异常，由调用方处理
+        if local_dir and local_dir.is_dir() and any(local_dir.iterdir()) and not local_weights:
+            raise RuntimeError(
+                f"BGE-M3 本地模型尚未下载完整：{local_path}。请等待模型下载完成后重试。"
+            )
+        model_name = local_path if local_weights else repository_id
+        if not model_name:
+            raise ValueError("BGE-M3模型未配置，请设置 BGE_M3 或提供有效的 BGE_M3_PATH")
+        if local_path and model_name == repository_id:
+            logger.warning(f"BGE-M3本地目录为空或不存在：{local_path}，改用模型仓库：{repository_id}")
+        if model_name == repository_id:
+            logger.info("正在检查BGE-M3模型缓存，首次使用时会自动下载必要文件")
+            model_name = snapshot_download(
+                repo_id=repository_id,
+                ignore_patterns=[
+                    "onnx/*",
+                    "openvino/*",
+                    "*.onnx",
+                    "*.jpg",
+                    "*.md",
+                ],
+            )
+        device = embedding_config.bge_device
+        use_fp16 = embedding_config.bge_fp16
+
+        logger.info(
+            "开始初始化BGE-M3模型",
+            extra={
+                "model_name": model_name,
+                "device": device,
+                "use_fp16": use_fp16,
+                "normalize_embeddings": True
+            }
+        )
+
+        try:
+            bge_m3_ef = BGEM3EmbeddingFunction(
+                model_name=model_name,
+                device=device,
+                use_fp16=use_fp16,
+                normalize_embeddings=True
+            )
+            logger.success("BGE-M3模型初始化成功，已开启原生L2归一化")
+            return bge_m3_ef
+        except Exception as e:
+            logger.error(f"BGE-M3模型初始化失败：{str(e)}", exc_info=True)
+            raise
 
 
 def generate_embeddings(texts):

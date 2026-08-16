@@ -46,6 +46,7 @@ def save_chat_message(
     rewritten_query:str="",
     item_names:Optional[List[str]] = None,
     image_urls:Optional[List[str]] = None,
+    sources:Optional[List[Dict[str, Any]]] = None,
     message_id:Optional[str] = None,
 )->str:
     ts = datetime.now().timestamp()
@@ -57,6 +58,7 @@ def save_chat_message(
         "rewritten_query": rewritten_query,
         "item_names": item_names,
         "image_urls": image_urls,
+        "sources": sources or [],
         "ts": ts,
     }
 

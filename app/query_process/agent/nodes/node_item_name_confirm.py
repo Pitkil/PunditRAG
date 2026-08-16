@@ -1,3 +1,4 @@
+import json
 import sys
 
 import numpy as np
@@ -16,6 +17,15 @@ from app.core.logger import logger, node_log, step_log
 from app.llm.embedding_utils import generate_embeddings
 from app.llm.llm_util import get_llm_client
 from app.utils.task_utils import add_done_task, add_running_task
+
+
+def get_direct_chat_answer(query):
+    """对无需检索的明确寒暄直接回复，避免无意义地加载向量模型。"""
+    normalized = "".join(str(query).strip().lower().split()).rstrip("!！?？。,.，")
+    greetings = {"你好", "您好", "嗨", "hi", "hello", "在吗", "你是谁"}
+    if normalized in greetings:
+        return "你好，我是 PunditRAG。你可以向我询问已导入资料中的内容。"
+    return ""
 
 @step_log("node_item_name_confirm")
 def step_1_data_validates(state):
@@ -75,7 +85,7 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
     }
 
 @step_log("step_4_vector_query_item_name")
-def step_4_vector_query_item_name(item_names):
+def step_4_vector_query_item_name(item_names, kb_ids=None):
     """在主题名称集合中查找与用户问题相关的已导入资料。"""
     if not item_names:
         return {}
@@ -89,12 +99,23 @@ def step_4_vector_query_item_name(item_names):
         logger.warning(f"主题名称集合不存在：{collection_name}，将继续全库检索")
         return {}
 
-    embeddings = generate_embeddings(item_names)
+    try:
+        embeddings = generate_embeddings(item_names)
+    except RuntimeError as exc:
+        if "本地模型尚未下载完整" not in str(exc):
+            raise
+        logger.warning("BGE-M3 尚未就绪，跳过资料主题匹配，保留联网搜索分支")
+        return {}
     vector_dict = {}
     for index, item_name in enumerate(item_names):
         requests = create_hybrid_search_requests(
             np.asarray(embeddings["dense"][index], dtype=np.float16),
             embeddings["sparse"][index],
+            expr=(
+                f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}"
+                if kb_ids
+                else None
+            ),
         )
         response = hybrid_search(
             client=milvus_client,
@@ -178,19 +199,30 @@ def step_7_save_user_chat_message(state):
 def node_item_name_confirm(state):
     """识别查询主题、匹配资料范围并保存用户消息。"""
     session_id = state.get("session_id")
+    run_id = state.get("run_id") or session_id
     is_stream = state.get("is_stream")
     node_name = sys._getframe().f_code.co_name
-    add_running_task(session_id, node_name, is_stream)
+    add_running_task(run_id, node_name, is_stream)
 
     original_query, session_id = step_1_data_validates(state)
     history = step_2_chat_history(session_id)
+    direct_answer = get_direct_chat_answer(original_query)
+    if direct_answer:
+        state["history"] = history
+        state["rewritten_query"] = original_query
+        state["item_names"] = []
+        state["answer"] = direct_answer
+        step_7_save_user_chat_message(state)
+        add_done_task(run_id, node_name, is_stream)
+        return state
+
     query_result = step_3_llm_itemnames_and_rewrite(history, original_query)
-    vector_dict = step_4_vector_query_item_name(query_result["item_names"])
+    vector_dict = step_4_vector_query_item_name(query_result["item_names"], state.get("kb_ids", []))
     final_result = step_5_select_item_list(vector_dict)
 
     state["history"] = history
     step_6_deal_state(state, final_result, query_result["rewritten_query"])
     step_7_save_user_chat_message(state)
 
-    add_done_task(session_id, node_name, is_stream)
+    add_done_task(run_id, node_name, is_stream)
     return state

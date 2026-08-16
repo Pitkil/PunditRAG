@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PROJECT_ROOT=/app \
     UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=600 \
     UV_PROJECT_ENVIRONMENT=/usr/local \
     PIP_NO_CACHE_DIR=1
 
@@ -21,9 +23,15 @@ RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g; 
     && pip install --no-cache-dir uv==0.8.5
 
 COPY pyproject.toml uv.lock ./
-RUN sed -i '/^\[\[tool\.uv\.index\]\]/,/^default = true$/d' pyproject.toml \
-    && rm -f uv.lock \
-    && uv sync --no-dev --no-install-project --default-index https://mirrors.aliyun.com/pypi/simple/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    sed -i '/^\[\[tool\.uv\.index\]\]/,/^default = true$/d' pyproject.toml \
+    && sed -i 's|https://pypi.tuna.tsinghua.edu.cn|https://mirrors.aliyun.com/pypi|g' uv.lock \
+    && uv sync --frozen --no-dev --no-install-project --default-index https://mirrors.aliyun.com/pypi/simple/ \
+    && uv pip install --system --default-index https://mirrors.aliyun.com/pypi/simple/ \
+        beautifulsoup4==4.14.3 \
+        openpyxl==3.1.5 \
+        python-docx==1.2.0 \
+        python-pptx==1.0.2
 
 COPY . .
 

@@ -7,7 +7,10 @@ class QueryGraphState(TypedDict):
     QueryGraphState 定义了整个查询流程中流转的数据结构。
     """
     session_id: str  # 会话唯一标识
+    run_id: str  # 单次查询运行标识，用于隔离任务状态和 SSE
     original_query: str  # 用户原始问题
+    kb_ids: List[str]  # 本轮允许检索的知识库
+    enable_web_search: bool  # 是否启用联网搜索
 
     # 检索过程中的中间数据
     embedding_chunks: list  # 普通向量检索回来的切片
@@ -22,6 +25,7 @@ class QueryGraphState(TypedDict):
     prompt: str  # 组装好的 Prompt
     answer: str  # 最终生成的答案
     image_urls: list  # 最终答案关联的图片地址
+    sources: list  # 最终答案引用来源
 
     # 辅助信息
     item_names: List[str]  # 提取出的商品名称
@@ -33,7 +37,10 @@ class QueryGraphState(TypedDict):
 # 默认状态（全部为空）
 query_graph_default_state: QueryGraphState = {
     "session_id": "",
+    "run_id": "",
     "original_query": "",
+    "kb_ids": [],
+    "enable_web_search": True,
     "embedding_chunks": [],
     "hyde_embedding_chunks": [],
     "web_search_docs": [],
@@ -42,6 +49,7 @@ query_graph_default_state: QueryGraphState = {
     "prompt": "",
     "answer": "",
     "image_urls": [],
+    "sources": [],
     "item_names": [],
     "rewritten_query": "",
     "history": [],

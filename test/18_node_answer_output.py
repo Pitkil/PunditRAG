@@ -91,7 +91,7 @@ def test_step_3_make_prompt():
     assert prompt == "组装后的提示词"
     _, kwargs = mock_load.call_args
     assert "交流电压测量" in kwargs["context"]
-    assert "向量查询" in kwargs["context"]
+    assert "知识库文档" in kwargs["context"]
     assert "网络搜索" in kwargs["context"]
     assert "RS-12数字万用表" in kwargs["item_names"]
     assert kwargs["question"] == state["rewritten_query"]
@@ -129,8 +129,8 @@ def test_step_4_generate_answer_stream():
         answer_module.step_4_generate_answer(state, "测试提示词")
 
     assert state["answer"] == "流式答案"
-    assert mock_push.call_count == 2
-    assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流式", "答案"]
+    assert mock_push.call_count == 1
+    assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流式答案"]
     mock_set_result.assert_called_once_with(state["session_id"], "answer", "流式答案")
 
 
@@ -163,7 +163,7 @@ def test_node_answer_output_stream():
         result = answer_module.node_answer_output(state)
 
     assert result["answer"] == "流式"
-    assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流", "式"]
+    assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流式"]
     mock_save.assert_called_once()
 
 

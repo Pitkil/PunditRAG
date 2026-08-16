@@ -109,7 +109,7 @@ from typing import Mapping
 
 def _trace_id(state) -> str:
     if isinstance(state, Mapping):
-        return str(state.get("session_id") or state.get("task_id") or "-")
+        return str(state.get("run_id") or state.get("task_id") or state.get("session_id") or "-")
     return "-"
 
 def node_log(node_name: str):

@@ -1,3 +1,4 @@
+import time
 from typing import Dict, List
 from .sse_utils import push_to_session
 
@@ -16,6 +17,8 @@ _tasks_status: Dict[str, str] = {}
 # key: task_id
 # value: 任务结果（例如 query 的 answer）
 _tasks_result: Dict[str, Dict[str, str]] = {}
+_tasks_started_at: Dict[str, Dict[str, float]] = {}
+_tasks_duration_ms: Dict[str, Dict[str, int]] = {}
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_PROCESSING = "processing"
@@ -28,6 +31,7 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "upload_file": "开始上传文件",
     "node_entry": "检查文件",
     "node_pdf_to_md": "PDF转Markdown",
+    "node_file_to_md": "文档转Markdown",
     "node_md_img": "Markdown图片处理",
     "node_item_name_recognition": "主体名称识别",
     "node_document_split": "文档切分",
@@ -37,13 +41,14 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "__end__": "处理完成",
     "END": "处理完成",
     # --- Query 流程节点（kb/query_process/main_graph.py）---
-    "node_item_name_confirm": "确认问题产品",
+    "node_item_name_confirm": "确认检索主题",
     "node_answer_output": "生成答案",
     "node_rerank": "重排序",
     "node_rrf": "倒排融合",
     "node_web_search_mcp": "网络搜索",
     "node_search_embedding": "切片搜索",
     "node_search_embedding_hyde": "切片搜索(假设性文档)",
+    "node_document_summary": "整份资料分层摘要",
     "node_multi_search": "多路搜索",
     "node_query_kg": "查询知识图谱",
     "node_join": "多路搜索合并",
@@ -58,6 +63,10 @@ def _ensure_task(task_id: str) -> None:
         _tasks_done_list[task_id] = []
     if task_id not in _tasks_result:
         _tasks_result[task_id] = {}
+    if task_id not in _tasks_started_at:
+        _tasks_started_at[task_id] = {}
+    if task_id not in _tasks_duration_ms:
+        _tasks_duration_ms[task_id] = {}
 
 
 def _to_cn(node_name: str) -> str:
@@ -78,6 +87,7 @@ def add_running_task(task_id: str, node_name: str, is_stream: bool = False) -> N
     # 避免重复追加
     if node_name not in running:
         running.append(node_name)
+    _tasks_started_at[task_id].setdefault(node_name, time.perf_counter())
 
     if is_stream:
         task_push_queue(task_id)
@@ -103,6 +113,9 @@ def add_done_task(task_id: str, node_name: str, is_stream: bool = False) -> None
     done = _tasks_done_list[task_id]
     if node_name not in done:
         done.append(node_name)
+    started_at = _tasks_started_at[task_id].pop(node_name, None)
+    if started_at is not None:
+        _tasks_duration_ms[task_id][node_name] = int((time.perf_counter() - started_at) * 1000)
 
     if is_stream:
         task_push_queue(task_id)
@@ -158,6 +171,28 @@ def get_running_task_list(task_id: str) -> List[str]:
     return [_to_cn(n) for n in running]
 
 
+def get_task_trace(task_id: str) -> List[Dict[str, object]]:
+    """返回适合前端展示的执行轨迹，不包含模型内部推理内容。"""
+    _ensure_task(task_id)
+    trace = []
+    for node_name in _tasks_done_list.get(task_id, []):
+        trace.append({
+            "node": node_name,
+            "label": _to_cn(node_name),
+            "status": "completed",
+            "duration_ms": _tasks_duration_ms[task_id].get(node_name),
+        })
+    for node_name in _tasks_running_list.get(task_id, []):
+        started_at = _tasks_started_at[task_id].get(node_name)
+        trace.append({
+            "node": node_name,
+            "label": _to_cn(node_name),
+            "status": "running",
+            "duration_ms": int((time.perf_counter() - started_at) * 1000) if started_at else None,
+        })
+    return trace
+
+
 def update_task_status(task_id: str, status_name: str, push_queue: bool = False) -> None:
     """
     更新任务状态。
@@ -176,6 +211,7 @@ def task_push_queue(task_id: str):
         "status": get_task_status(task_id),
         "done_list": get_done_task_list(task_id),
         "running_list": get_running_task_list(task_id),
+        "trace": get_task_trace(task_id),
     })
 
 def clear_task(task_id: str):
@@ -183,3 +219,5 @@ def clear_task(task_id: str):
     _tasks_done_list.pop(task_id, None)
     _tasks_status.pop(task_id, None)
     _tasks_result.pop(task_id, None)
+    _tasks_started_at.pop(task_id, None)
+    _tasks_duration_ms.pop(task_id, None)

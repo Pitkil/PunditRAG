@@ -3,10 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: punditrag-app
     env_file:
       - .env.docker
     environment:
+      PROJECT_ROOT: /app
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "600"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     gpus: all
@@ -16,8 +20,22 @@ services:
     command:
       - sh
       - -c
-      - uvicorn app.import_process.agent.api.server:app --host 0.0.0.0 --port 8000 & uvicorn app.query_process.api.server:app --host 0.0.0.0 --port 8001 & wait
+      - |
+        uvicorn app.import_process.agent.api.server:app --host 0.0.0.0 --port 8000 &
+        import_pid=$$!
+        uvicorn app.query_process.api.server:app --host 0.0.0.0 --port 8001 &
+        query_pid=$$!
+        trap 'kill "$$import_pid" "$$query_pid" 2>/dev/null || true' TERM INT
+        while kill -0 "$$import_pid" 2>/dev/null && kill -0 "$$query_pid" 2>/dev/null; do
+          sleep 2
+        done
+        kill "$$import_pid" "$$query_pid" 2>/dev/null || true
+        wait "$$import_pid" 2>/dev/null || true
+        wait "$$query_pid" 2>/dev/null || true
+        exit 1
     volumes:
+      - ./app:/app/app:ro
+      - ./prompts:/app/prompts:ro
       - ./temp-files:/app/temp-files
       - ./models:/app/models
       - ./cache/modelscope:/app/.cache/modelscope
@@ -31,6 +49,12 @@ services:
         condition: service_healthy
       create-minio-bucket:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; [urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).read() for port in (8000, 8001)]"]
+      interval: 15s
+      timeout: 8s
+      retries: 4
+      start_period: 30s
     restart: unless-stopped
 
   etcd:

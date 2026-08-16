@@ -6,6 +6,7 @@ import numpy as np
 from langchain.messages import HumanMessage, SystemMessage
 from pymilvus import DataType
 from app.clients.milvus_utils import get_milvus_client
+from app.clients.mongo_workspace_utils import ensure_document_active
 from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
@@ -75,10 +76,12 @@ def step_3(context,file_title)->str:
     return item_name  
 
 @step_log("step_4")
-def step_4(item_name, file_title, dense_vector, sparse_vector):
+def step_4(item_name, file_title, dense_vector, sparse_vector, kb_id="", document_id=""):
     '''
     存入milvus
     '''
+    if document_id:
+        ensure_document_active(document_id)
     milvus_client = get_milvus_client()
     if not milvus_client:
         logger.error("无法连接到 Milvus 数据库，获取 client 失败！")
@@ -123,10 +126,12 @@ def step_4(item_name, file_title, dense_vector, sparse_vector):
             index_params = index_params,
         )
     #删除旧数据
-    milvus_client.delete(
-        milvus_config.item_name_collection,
-        filter=f"file_title == {json.dumps(file_title, ensure_ascii=False)}",
+    delete_filter = (
+        f"document_id == {json.dumps(document_id, ensure_ascii=False)}"
+        if document_id
+        else f"file_title == {json.dumps(file_title, ensure_ascii=False)}"
     )
+    milvus_client.delete(milvus_config.item_name_collection, filter=delete_filter)
     #存储数据
     normalized_dense_vector = np.asarray(dense_vector, dtype=np.float16)
 
@@ -134,11 +139,22 @@ def step_4(item_name, file_title, dense_vector, sparse_vector):
             {
             "file_title":file_title,
             "item_name":item_name,
+            "kb_id": kb_id,
+            "document_id": document_id,
             "dense_vector":normalized_dense_vector,
             "sparse_vector":sparse_vector
             }
         ]
     milvus_client.insert(collection_name=milvus_config.item_name_collection , data=data)
+    if document_id:
+        try:
+            ensure_document_active(document_id)
+        except RuntimeError:
+            milvus_client.delete(
+                milvus_config.item_name_collection,
+                filter=f"document_id == {json.dumps(document_id, ensure_ascii=False)}",
+            )
+            raise
 
 @node_log("node_item_name_recognition")
 def node_item_name_recognition(state: ImportGraphState) -> ImportGraphState:
@@ -165,7 +181,14 @@ def node_item_name_recognition(state: ImportGraphState) -> ImportGraphState:
     dense_vector = result['dense'][0]
     sparse_vector = result['sparse'][0]
 
-    step_4(item_name,file_title,dense_vector,sparse_vector)
+    step_4(
+        item_name,
+        file_title,
+        dense_vector,
+        sparse_vector,
+        state.get("kb_id", ""),
+        state.get("document_id", ""),
+    )
 
     add_done_task(state['task_id'],"node_item_name_recognition")
     return state

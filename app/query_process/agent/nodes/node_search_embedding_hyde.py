@@ -48,7 +48,7 @@ def step_3_rewritten_hyde_vector(rewritten_query, hyde_answer):
     return result['dense'][0],result['sparse'][0]
 
 @step_log("step_4_mivlus_hybrid_search")
-def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names):
+def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names, kb_ids=None):
     """
      混合搜索步骤:
         1. 创建对应AnnSearchRequest
@@ -59,7 +59,12 @@ def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names):
     if not milvus_client:
         raise ValueError("无法连接到 Milvus 数据库")
     #过滤表达式
-    expr_str = f"item_name in {json.dumps(item_names, ensure_ascii=False)}" if item_names else None
+    filters = []
+    if item_names:
+        filters.append(f"item_name in {json.dumps(item_names, ensure_ascii=False)}")
+    if kb_ids:
+        filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
+    expr_str = " and ".join(filters) or None
     #生成 Milvus 混合检索所需的请求对象列表
     reqs = create_hybrid_search_requests(dense_vector, sparse_vector, expr=expr_str)
     # 调用混合检索
@@ -69,7 +74,7 @@ def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names):
         reqs = reqs,
         norm_score = True,
         limit = 5,
-        output_fields=["chunk_id","item_name","content","title","parent_title","part","file_title"]
+        output_fields=["chunk_id","item_name","content","title","parent_title","part","file_title","kb_id","document_id"]
     )
     return response[0] if response and len(response) > 0 else []
 
@@ -79,10 +84,20 @@ def node_search_embedding_hyde(state):
     节点功能：HyDE (Hypothetical Document Embedding)
     先让 LLM 生成假设性答案，再对答案进行向量检索，提高召回率。
     """
-    add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
+    run_id = state.get("run_id") or state["session_id"]
+    add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     item_names, rewritten_query = step_1_data_validates(state)
     hyde_answer = step_2_call_llm(rewritten_query)
-    dense_vector,sparse_vector = step_3_rewritten_hyde_vector(rewritten_query, hyde_answer)
-    milvus_result = step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names)
-    add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
+    try:
+        dense_vector,sparse_vector = step_3_rewritten_hyde_vector(rewritten_query, hyde_answer)
+    except RuntimeError as exc:
+        if "本地模型尚未下载完整" not in str(exc):
+            raise
+        logger.warning("BGE-M3 尚未就绪，跳过 HyDE 向量检索，保留其他检索分支")
+        add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
+        return {"hyde_embedding_chunks": []}
+    milvus_result = step_4_mivlus_hybrid_search(
+        dense_vector, sparse_vector, item_names, state.get("kb_ids", [])
+    )
+    add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return {"hyde_embedding_chunks": milvus_result}

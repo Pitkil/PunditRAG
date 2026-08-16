@@ -66,9 +66,10 @@ def run_async_search(rewritten_query: str, count: int = 5):
 def node_web_search_mcp(state):
     """调用外部搜索引擎补充信息。"""
     session_id = state["session_id"]
+    run_id = state.get("run_id") or session_id
     is_stream = state.get("is_stream", False)
     node_name = sys._getframe().f_code.co_name
-    add_running_task(session_id, node_name, is_stream)
+    add_running_task(run_id, node_name, is_stream)
 
     rewritten_query = step_1_data_validate(state)
     mcp_result = run_async_search(rewritten_query, count=10)
@@ -84,5 +85,5 @@ def node_web_search_mcp(state):
     pages = result_dict.get("pages", []) if isinstance(result_dict, dict) else []
     logger.info(f"网络搜索返回{len(pages)}条结果")
 
-    add_done_task(session_id, node_name, is_stream)
+    add_done_task(run_id, node_name, is_stream)
     return {"web_search_docs": pages}

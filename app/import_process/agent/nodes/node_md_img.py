@@ -100,10 +100,10 @@ def step_3(image_context_list, stem) -> Dict[str,str]:
     return image_summary_dict
 
 @step_log("step_4")
-def step_4(image_context_list, image_summaries_dict, md_content, stem) -> str:
+def step_4(image_context_list, image_summaries_dict, md_content, object_scope) -> str:
      minio_client = get_minio_client()
      image_root_dir = str(minio_config.minio_img_dir or "").strip("/")
-     image_object_prefix = f"{image_root_dir}/{stem}".strip("/")
+     image_object_prefix = f"{image_root_dir}/{object_scope}".strip("/")
      object_list = minio_client.list_objects(
         bucket_name= str(minio_config.bucket_name),
         prefix = f"{image_object_prefix}/",
@@ -197,6 +197,7 @@ def node_md_img(state: ImportGraphState) -> ImportGraphState:
     #提前结束识别
     if not images_path_obj.exists() or len(list(images_path_obj.iterdir())) == 0:
         logger.warning(f"图片文件夹为空或者没有图片,无需后续处理!")
+        add_done_task(state['task_id'],"node_md_img")
         return state
     #扫描图片上下文
     image_context_list = step_2(md_context,images_path_obj)
@@ -204,7 +205,8 @@ def node_md_img(state: ImportGraphState) -> ImportGraphState:
     #调用视觉模型识别图片内容
     image_summary_list = step_3(image_context_list,md_path_obj.stem)
     #上传图片并替换md内容
-    new_md_content = step_4(image_context_list,image_summary_list,md_context,md_path_obj.stem)
+    object_scope = state.get("document_id") or md_path_obj.stem
+    new_md_content = step_4(image_context_list, image_summary_list, md_context, object_scope)
     #备份
     new_md_path = step_5(new_md_content,md_path_obj)
     #更新状态

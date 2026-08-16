@@ -7,6 +7,11 @@ from app.core.logger import logger, step_log, node_log
 from app.core.load_prompt import load_prompt
 from app.llm.llm_util import get_llm_client
 from app.clients.mongo_history_utils import save_chat_message
+from app.query_process.agent.source_utils import (
+    build_source_records,
+    deduplicate_documents,
+    select_cited_sources,
+)
 import re
 
 @step_log("step_1_data_validates")
@@ -16,23 +21,22 @@ def step_1_data_validates(state):
     """
     answer = state.get("answer")
     is_stream = state.get("is_stream", True)
-    session_id = state.get("session_id")
+    run_id = state.get("run_id") or state.get("session_id")
     #完整答案就已经存在
     #说明：1.搜索关键词不确定 2.未找到关键词
     if answer:
         if is_stream:
             #模拟这个答案流式输出
-            for ch in answer:
-                push_to_session(session_id, SSEEvent.DELTA, {"delta": ch})
-                time.sleep(0.3)
-        set_task_result(session_id, "answer", answer)
+            push_to_session(run_id, SSEEvent.DELTA, {"delta": answer})
+        set_task_result(run_id, "answer", answer)
         return True #返回 True：已有答案，本轮处理完毕，不用走后续流程
     return False #返回 False：无答案，需要继续走完整检索流程
 
 @step_log("step_2_data_validates")
 def step_2_data_validates(state):
     history = state.get("history", [])
-    reranked_docs = state.get("reranked_docs", [])
+    reranked_docs = deduplicate_documents(state.get("reranked_docs", []))
+    state["reranked_docs"] = reranked_docs
     item_names = state.get("item_names", [])
     rewritten_query = state.get("rewritten_query", "")
     if not reranked_docs or len(reranked_docs) == 0 or not rewritten_query:
@@ -45,10 +49,16 @@ def step_2_data_validates(state):
 def step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_query):
     context_chunk_list = []
     for number, chunk in enumerate(reranked_docs,start=1):
+        score_text = (
+            f"匹配度得分:{chunk['score']}"
+            if chunk.get("score") is not None
+            else f"搜索排序:第{chunk.get('search_rank', number)}位（未经过本地重排序）"
+        )
         context_chunk_list.append(
-            f"第{number}块: 标题:{chunk['title']} 匹配度得分:{chunk['score']} 来源:{'网络搜索' if chunk['type'] == 'web' else '向量查询'}"
+            f"来源[{number}]: 标题:{chunk.get('title') or '未命名来源'} {score_text} "
+            f"类型:{'网络搜索' if chunk.get('type') == 'web' else '知识库文档'}"
             f"\n"
-            f"内容:{chunk['text']}"
+            f"内容:{chunk.get('text') or chunk.get('content') or ''}"
         )
     context_chunk_str = "\n\n".join(context_chunk_list)
 
@@ -62,8 +72,10 @@ def step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_quer
 
     item_name = "本次关联主体:" + ",".join(item_names) if item_names and len(item_names) > 0 else '没有关联主体'
     # 加载提示词
+    available_images = state.get("image_urls", [])
     prompt = load_prompt("answer_out",context = context_chunk_str,
-                history = history_text ,item_names = item_name,question = rewritten_query)
+                history = history_text, item_names = item_name, question = rewritten_query,
+                image_urls = "\n".join(available_images) if available_images else "无可用图片")
 
     return prompt
 
@@ -73,18 +85,27 @@ def step_4_generate_answer(state, prompt):
     最终答案生成
     """
     is_stream = state.get("is_stream", True)
-    session_id = state.get("session_id")
+    run_id = state.get("run_id") or state.get("session_id")
     llm_client = get_llm_client()
     final_answer = ""
     if is_stream:
+        buffer = ""
+        last_flush = time.monotonic()
         for chunk in llm_client.stream(prompt):
             delta_content = str(chunk.content)
             final_answer += delta_content
-            push_to_session(session_id, SSEEvent.DELTA, {"delta": delta_content})
+            buffer += delta_content
+            now = time.monotonic()
+            if len(buffer) >= 16 or now - last_flush >= 0.06:
+                push_to_session(run_id, SSEEvent.DELTA, {"delta": buffer})
+                buffer = ""
+                last_flush = now
+        if buffer:
+            push_to_session(run_id, SSEEvent.DELTA, {"delta": buffer})
     else:
         response = llm_client.invoke(prompt)
         final_answer = str(response.content)
-    set_task_result(session_id,"answer",final_answer)
+    set_task_result(run_id,"answer",final_answer)
     state['answer'] = final_answer
 
 @step_log("step_5_extract_chunk_images")
@@ -111,7 +132,37 @@ def step_5_extract_chunk_images(state, reranked_docs):
                 if image_url not in image_urls:
                     image_urls.append(image_url)
 
+        for image_url in chunk.get("image_urls") or []:
+            if isinstance(image_url, str) and image_url not in image_urls:
+                image_urls.append(image_url)
+
     state['image_urls'] = image_urls
+
+
+@step_log("step_5_filter_answer_images")
+def step_5_filter_answer_images(state):
+    """仅保留参考资料中真实存在的图片 URL，并移除模型编造的图片区块。"""
+    answer = state.get("answer") or ""
+    allowed_images = set(state.get("image_urls") or [])
+    image_block = re.compile(r"\n*【图片】\s*\n(?P<urls>(?:\s*<?https?://[^\s>]+>?\s*\n?)+)\s*$", re.IGNORECASE)
+    match = image_block.search(answer)
+    selected_images = []
+    if match:
+        for image_url in re.findall(r"https?://[^\s>]+", match.group("urls"), re.IGNORECASE):
+            if image_url in allowed_images and image_url not in selected_images:
+                selected_images.append(image_url)
+        answer = answer[:match.start()].rstrip()
+
+    state["answer"] = answer
+    state["image_urls"] = selected_images
+    set_task_result(state.get("run_id") or state.get("session_id"), "answer", answer)
+
+
+@step_log("step_5_build_sources")
+def step_5_build_sources(state, reranked_docs):
+    """仅返回答案实际引用的去重来源，避免把候选上下文冒充证据。"""
+    candidates = build_source_records(reranked_docs)
+    state["sources"] = select_cited_sources(state.get("answer", ""), candidates)
 
 @step_log("step_6_save_chat_history")
 def step_6_save_chat_history(state):
@@ -124,7 +175,8 @@ def step_6_save_chat_history(state):
         text=state.get("answer"),
         rewritten_query=state.get("rewritten_query") or state.get("original_query"),
         item_names=state.get("item_names",[]),
-        image_urls = state.get("image_urls",[])
+        image_urls = state.get("image_urls",[]),
+        sources=state.get("sources", []),
     )
 
 @node_log("node_answer_output")
@@ -132,13 +184,16 @@ def node_answer_output(state):
     """
     节点功能：进行过处理可以是流式输出可以整体输出
     """
-    add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream", False))
+    run_id = state.get("run_id") or state["session_id"]
+    add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     has_answer = step_1_data_validates(state)
     if not has_answer:
         history, reranked_docs, item_names, rewritten_query = step_2_data_validates(state)
+        step_5_extract_chunk_images(state, reranked_docs)
         prompt = step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_query)
         step_4_generate_answer(state, prompt)
-        step_5_extract_chunk_images(state, reranked_docs)
+        step_5_filter_answer_images(state)
+        step_5_build_sources(state, reranked_docs)
     step_6_save_chat_history(state)
-    add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream", False))   
+    add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     return state

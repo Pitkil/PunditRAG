@@ -64,7 +64,8 @@ def node_rrf(state):
     节点功能：Reciprocal Rank Fusion
     将多路召回的结果进行加权融合排序。
     """
-    add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream", False))
+    run_id = state.get("run_id") or state["session_id"]
+    add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     embedding_chunks, hyde_embedding_chunks = step_1_data_validates(state)
     #两路贡献相等
     param_list = [
@@ -73,5 +74,5 @@ def node_rrf(state):
     ]
     entity_list = step_2_rrf_list(param_list,k=60,top=5)
     state['rrf_chunks'] = entity_list
-    add_done_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream", False))
+    add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     return state
