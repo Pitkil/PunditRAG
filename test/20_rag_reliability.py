@@ -19,7 +19,7 @@ from app.query_process.api import server as query_server
 def test_low_relevance_chunks_are_rejected():
     chunks = [
         {"title": "无关资料", "text": "不相关内容", "score": 0.01},
-        {"title": "仍然无关", "text": "其他内容", "score": 0.14},
+        {"title": "仍然无关", "text": "其他内容", "score": 0.08},
     ]
     assert step_4_chunk_topk(chunks) == []
 

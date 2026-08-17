@@ -87,7 +87,7 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
 @step_log("step_4_vector_query_item_name")
 def step_4_vector_query_item_name(item_names, kb_ids=None):
     """在主题名称集合中查找与用户问题相关的已导入资料。"""
-    if not item_names:
+    if not item_names or not kb_ids:
         return {}
 
     milvus_client = get_milvus_client()
@@ -109,7 +109,7 @@ def step_4_vector_query_item_name(item_names, kb_ids=None):
     vector_dict = {}
     for index, item_name in enumerate(item_names):
         requests = create_hybrid_search_requests(
-            np.asarray(embeddings["dense"][index], dtype=np.float16),
+            np.asarray(embeddings["dense"][index], dtype=np.float32),
             embeddings["sparse"][index],
             expr=(
                 f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}"
@@ -168,7 +168,7 @@ def step_5_select_item_list(vector_dict):
 
 @step_log("step_6_deal_state")
 def step_6_deal_state(state, final_result, rewritten_query):
-    """确定检索范围；无明确范围时允许后续节点执行全库检索。"""
+    """确定主题扩展词；主题不明确时仍在显式知识库范围内检索。"""
     confirmed_names = final_result.get("confirmed_item_name_list", [])
     optional_names = final_result.get("options_item_name_list", [])
 
@@ -177,12 +177,14 @@ def step_6_deal_state(state, final_result, rewritten_query):
 
     if confirmed_names:
         state["item_names"] = confirmed_names
+        topic_context = "、".join(confirmed_names)
+        if topic_context and topic_context not in rewritten_query:
+            state["rewritten_query"] = f"{rewritten_query}（资料主题：{topic_context}）"
         return
 
     state["item_names"] = []
-    if len(optional_names) > 1:
-        option_text = "、".join(optional_names)
-        state["answer"] = f"检索到多个可能相关的资料主题：{option_text}。请说明你想查询哪一个。"
+    if optional_names:
+        logger.info(f"主题匹配置信度不足，将执行知识库全局检索：{optional_names}")
 
 @step_log("step_7_save_user_chat_message")
 def step_7_save_user_chat_message(state):
@@ -217,7 +219,8 @@ def node_item_name_confirm(state):
         return state
 
     query_result = step_3_llm_itemnames_and_rewrite(history, original_query)
-    vector_dict = step_4_vector_query_item_name(query_result["item_names"], state.get("kb_ids", []))
+    lookup_terms = query_result["item_names"] or [query_result["rewritten_query"]]
+    vector_dict = step_4_vector_query_item_name(lookup_terms, state.get("kb_ids", []))
     final_result = step_5_select_item_list(vector_dict)
 
     state["history"] = history

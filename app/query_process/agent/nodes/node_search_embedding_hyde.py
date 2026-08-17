@@ -1,4 +1,3 @@
-import json
 import sys
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -8,6 +7,7 @@ from app.llm.embedding_utils import *
 from app.clients.milvus_utils import *
 from app.core.logger import logger, node_log, step_log
 from app.core.load_prompt import load_prompt
+from app.query_process.agent.retrieval_utils import search_chunks
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
@@ -58,25 +58,9 @@ def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names, kb_ids=
     milvus_client = get_milvus_client()
     if not milvus_client:
         raise ValueError("无法连接到 Milvus 数据库")
-    #过滤表达式
-    filters = []
-    if item_names:
-        filters.append(f"item_name in {json.dumps(item_names, ensure_ascii=False)}")
-    if kb_ids:
-        filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
-    expr_str = " and ".join(filters) or None
-    #生成 Milvus 混合检索所需的请求对象列表
-    reqs = create_hybrid_search_requests(dense_vector, sparse_vector, expr=expr_str)
-    # 调用混合检索
-    response = hybrid_search(
-        client = milvus_client,
-        collection_name = milvus_config.chunks_collection,
-        reqs = reqs,
-        norm_score = True,
-        limit = 5,
-        output_fields=["chunk_id","item_name","content","title","parent_title","part","file_title","kb_id","document_id"]
+    return search_chunks(
+        milvus_client, dense_vector, sparse_vector, item_names, kb_ids or []
     )
-    return response[0] if response and len(response) > 0 else []
 
 @node_log(node_name="node_search_embedding_hyde")
 def node_search_embedding_hyde(state):
@@ -87,6 +71,10 @@ def node_search_embedding_hyde(state):
     run_id = state.get("run_id") or state["session_id"]
     add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     item_names, rewritten_query = step_1_data_validates(state)
+    if not state.get("kb_ids"):
+        logger.info("未选择知识库，跳过 HyDE 向量检索")
+        add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
+        return {"hyde_embedding_chunks": []}
     hyde_answer = step_2_call_llm(rewritten_query)
     try:
         dense_vector,sparse_vector = step_3_rewritten_hyde_vector(rewritten_query, hyde_answer)

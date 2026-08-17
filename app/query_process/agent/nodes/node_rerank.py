@@ -6,20 +6,17 @@ import sys
 from pathlib import Path
 from app.llm.reranker_utils import get_reranker_model
 from app.conf.reranker_config import reranker_config
-from app.llm.text_compress_utils import compress_text
+from app.conf.retrieval_config import retrieval_config
 from app.utils.task_utils import add_running_task
 from app.core.logger import logger, step_log
 load_dotenv()
 
-#全局设置参数
-RERANK_MAX_TOPK:int = 10
-RERANK_MIN_TOPK:int = 1
-# 断崖阈值（相对）
-RERANK_GAP_RATIO:float = 2
-# 断崖阈值（绝对）
-RERANK_GAP_ABS:float = 2
-# 过滤重排后几乎完全不相关的尾部结果，避免 0 分切片进入答案和引用来源。
-RERANK_MIN_SCORE: float = float(os.getenv("RERANK_MIN_SCORE", "0.15"))
+RERANK_MAX_TOPK = retrieval_config.rerank_max_top_k
+RERANK_MIN_TOPK = retrieval_config.rerank_min_top_k
+RERANK_FALLBACK_TOPK = retrieval_config.rerank_fallback_top_k
+RERANK_GAP_RATIO = retrieval_config.rerank_gap_ratio
+RERANK_GAP_ABS = retrieval_config.rerank_gap_abs
+RERANK_MIN_SCORE = retrieval_config.rerank_min_score
 
 @step_log("step_1_data_validates")
 def step_1_data_validates(state):
@@ -71,7 +68,7 @@ def step_2_merged_rrf_and_mcp(rrf_chunks, web_search_docs):
                 "text":doc.get("content") or doc.get("snippet") or "",
                 "url":doc.get("url"),
                 "type":"web",
-                "score":doc.get("score"),
+                "score":float(doc.get("score") or 0.0),
                 "search_rank":search_rank,
                 "image_urls":image_urls,
                 "file_title": doc.get("site_name") or doc.get("title"),
@@ -91,10 +88,8 @@ def step_3_rerank_score_and_sort(state, final_chunk_list):
     text_list = [item.get("text") for item in final_chunk_list]
     question_pairs = []
     for text in text_list:
-        # 正文超长先压缩，避免 (问题+正文) 超过 reranker 模型输入上限
-        compressed_text = compress_text(text)
-        # 组装（问题，答案）对的集合
-        question_pairs.append((rewritten_query, compressed_text))
+        # 重排必须读取原始证据，避免在排序前调用 LLM 改写或丢失数字细节。
+        question_pairs.append((rewritten_query, text or ""))
 
     local_path = reranker_config.bge_reranker_large.strip()
     local_dir = Path(local_path) if local_path else None
@@ -137,7 +132,7 @@ def step_4_chunk_topk(chunk_list_score_sorted):
     max_topk =  min(max_topk,len(chunk_list_score_sorted))
     topk = max_topk
     if topk > min_topk:
-        for index in range(min_topk-1,max_topk-1):
+        for index in range(0,max_topk-1):
              score_1 = chunk_list_score_sorted[index].get("score",0.0)
              score_2 = chunk_list_score_sorted[index+1].get("score",0.0)
              #分差
@@ -146,10 +141,17 @@ def step_4_chunk_topk(chunk_list_score_sorted):
              ratio_score = abs_score / (score_1 + 1e-7)
              if abs_score > max_gap or ratio_score > gap_ratio:
                  #产生断崖了
-                 topk = index + 1#第n个可以获取
+                 topk = max(min_topk, index + 1)
                  break
     final_chunk_list = chunk_list_score_sorted[:topk]
     return final_chunk_list
+
+def step_5_low_confidence_fallback(chunk_list_score_sorted):
+    """让回答模型核验少量低分候选，避免重排节点替最终模型提前拒答。"""
+    fallback = []
+    for chunk in chunk_list_score_sorted[:RERANK_FALLBACK_TOPK]:
+        fallback.append({**chunk, "low_confidence": True})
+    return fallback
 
 def node_rerank(state):
     """
@@ -161,16 +163,23 @@ def node_rerank(state):
     final_chunk_list = step_2_merged_rrf_and_mcp(rrf_chunks,web_search_docs)
     if not final_chunk_list:
         state["reranked_docs"] = []
+        state["evidence_quality"] = "none"
         state["answer"] = "没有检索到足够的相关资料，暂时无法基于知识库回答这个问题。"
         add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
         return state
     final_chunk_list_score_sorted = step_3_rerank_score_and_sort(state,final_chunk_list)
     if any(chunk.get("score") is None for chunk in final_chunk_list_score_sorted):
         final_chunk_list_score_sorted_topk = final_chunk_list_score_sorted[:RERANK_MAX_TOPK]
+        state["evidence_quality"] = "unscored"
     else:
         final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted)
+        if final_chunk_list_score_sorted_topk:
+            state["evidence_quality"] = "qualified"
+        else:
+            final_chunk_list_score_sorted_topk = step_5_low_confidence_fallback(
+                final_chunk_list_score_sorted
+            )
+            state["evidence_quality"] = "low"
     state["reranked_docs"] = final_chunk_list_score_sorted_topk
-    if not final_chunk_list_score_sorted_topk:
-        state["answer"] = "当前资料中没有找到与问题足够相关的信息，无法可靠作答。"
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return state

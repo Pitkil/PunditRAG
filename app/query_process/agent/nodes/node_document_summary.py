@@ -8,7 +8,11 @@ from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
 from app.llm.llm_util import get_llm_client
-from app.query_process.agent.source_utils import build_source_records, select_cited_sources
+from app.query_process.agent.source_utils import (
+    build_source_records,
+    reject_invalid_citations,
+    select_cited_sources,
+)
 from app.utils.task_utils import add_done_task, add_running_task
 
 
@@ -25,16 +29,19 @@ def is_document_summary_request(state) -> bool:
 
 @step_log("step_1_load_summary_chunks")
 def step_1_load_summary_chunks(state) -> List[Dict]:
+    kb_ids = state.get("kb_ids") or []
+    if not kb_ids:
+        logger.info("未选择知识库，跳过整库摘要")
+        return []
+
     client = get_milvus_client()
     collection = milvus_config.chunks_collection
     if not client or not collection or not client.has_collection(collection):
         return []
 
     filters = []
-    kb_ids = state.get("kb_ids") or []
     item_names = state.get("item_names") or []
-    if kb_ids:
-        filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
+    filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
     if item_names:
         filters.append(f"item_name in {json.dumps(item_names, ensure_ascii=False)}")
     rows = client.query(
@@ -122,7 +129,10 @@ def node_document_summary(state):
     else:
         question = state.get("rewritten_query") or state.get("original_query") or "概括资料"
         mapped = step_2_map_summary(question, candidates)
-        state["answer"] = step_3_reduce_summary(question, mapped)
+        state["answer"] = reject_invalid_citations(
+            step_3_reduce_summary(question, mapped),
+            candidates,
+        )
         state["sources"] = select_cited_sources(state["answer"], candidates)
         logger.info(
             f"整份资料摘要完成：读取{len(candidates)}个去重切片，"

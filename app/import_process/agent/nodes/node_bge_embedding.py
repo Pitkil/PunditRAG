@@ -26,7 +26,14 @@ def step_2(chunks):
             step_chunks = chunks[index:index+step]
             vector_str_list = []
             for item in step_chunks:
-                text = f"主体：{item['item_name']}，内容：{item['content']}" if item['item_name'] else item['content']
+                metadata = [
+                    f"文档：{item.get('file_title', '')}",
+                    f"章节：{item.get('parent_title') or item.get('title', '')}",
+                ]
+                if item.get("item_name"):
+                    metadata.append(f"主题：{item['item_name']}")
+                metadata.append(f"内容：{item['content']}")
+                text = "\n".join(metadata)
                 vector_str_list.append(text)
                 #最多5个一次，防止本地模型崩溃
             vectors = generate_embeddings(vector_str_list)

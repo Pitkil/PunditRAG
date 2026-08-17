@@ -1,6 +1,9 @@
 .git
 .history
 .venv
+.uv-cache
+.codegraph
+.pytest_cache
 __pycache__
 *.pyc
 *.pyo
@@ -12,3 +15,7 @@ cache
 models
 data
 doc
+eval
+test
+logs
+output

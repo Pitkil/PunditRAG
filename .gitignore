@@ -4,7 +4,16 @@
 !.env.docker.example
 
 .venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 .history/
+.codegraph/
+.idea/
+.vscode/
 __pycache__/
 *.pyc
 *.pyo
@@ -16,6 +25,12 @@ logs/
 temp-files/
 doc/
 output/
+
+# Evaluation inputs downloaded from upstream projects and generated artifacts.
+eval/raw/
+eval/tmp/
+eval/results/*
+!eval/results/.gitkeep
 
 models/
 

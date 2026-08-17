@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime
@@ -9,7 +10,7 @@ from typing import Any, Dict, List
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from minio.deleteobjects import DeleteObject
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -45,17 +46,21 @@ from app.utils.task_utils import (
     set_task_result,
     update_task_status,
 )
+from app.utils.api_utils import get_cors_origins
 
 
 app = FastAPI(title="PunditRAG import service", description="知识库与文档导入服务")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".md", *SUPPORTED_CONVERT_EXTENSIONS}
+MAX_UPLOAD_FILES = max(1, int(os.getenv("MAX_UPLOAD_FILES", "20")))
+MAX_UPLOAD_SIZE_BYTES = max(1, int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))) * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 @app.get("/")
@@ -71,9 +76,89 @@ def return_import_html():
     return FileResponse(path=html_path, media_type=guess_type(html_path.name)[0])
 
 
+@app.get("/assets/{object_path:path}")
+def get_asset(object_path: str):
+    image_root = str(minio_config.minio_img_dir or "").strip("/")
+    normalized = object_path.strip("/")
+    if not image_root or not normalized.startswith(f"{image_root}/"):
+        raise HTTPException(status_code=404, detail="资源不存在")
+    client = get_minio_client()
+    try:
+        response = client.get_object(str(minio_config.bucket_name), normalized)
+    except Exception as exc:
+        logger.warning(f"读取MinIO资源失败：{normalized}，{exc}")
+        raise HTTPException(status_code=404, detail="资源不存在") from exc
+
+    def stream_object():
+        try:
+            while chunk := response.read(1024 * 1024):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    return StreamingResponse(
+        stream_object(),
+        media_type=response.headers.get("Content-Type", "application/octet-stream"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    checks = {}
+    try:
+        mongo = list_knowledge_bases()
+        checks["mongo"] = {"status": "ok", "knowledge_bases": len(mongo)}
+    except Exception as exc:
+        checks["mongo"] = {"status": "error", "detail": str(exc)}
+    try:
+        milvus = get_milvus_client()
+        if not milvus:
+            raise RuntimeError("Milvus client unavailable")
+        checks["milvus"] = {"status": "ok", "collections": len(milvus.list_collections())}
+    except Exception as exc:
+        checks["milvus"] = {"status": "error", "detail": str(exc)}
+    try:
+        minio = get_minio_client()
+        bucket = str(minio_config.bucket_name)
+        checks["minio"] = {"status": "ok" if minio.bucket_exists(bucket) else "error", "bucket": bucket}
+    except Exception as exc:
+        checks["minio"] = {"status": "error", "detail": str(exc)}
+
+    healthy = all(check["status"] == "ok" for check in checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+    )
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    normalized = str(filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    normalized = re.sub(r"[\x00-\x1f<>:\"|?*]", "_", normalized)
+    if normalized in {"", ".", ".."}:
+        raise HTTPException(status_code=400, detail="文件名无效")
+    return normalized[:240]
+
+
+async def _write_upload_file(file: UploadFile, destination: Path) -> int:
+    written = 0
+    try:
+        with destination.open("wb") as target:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                written += len(chunk)
+                if written > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件 {destination.name} 超过 {MAX_UPLOAD_SIZE_BYTES // 1024 // 1024}MB 限制",
+                    )
+                target.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    return written
 
 
 def invoke_import_graph(
@@ -124,6 +209,8 @@ async def upload(
     files: List[UploadFile] = File(...),
     kb_id: str = Form(...),
 ):
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=f"单次最多上传 {MAX_UPLOAD_FILES} 个文件")
     knowledge_bases = {item["kb_id"] for item in list_knowledge_bases()}
     if kb_id not in knowledge_bases:
         raise HTTPException(status_code=404, detail="知识库不存在")
@@ -132,7 +219,7 @@ async def upload(
     document_ids = []
     base_dir = PROJECT_ROOT / "temp-files" / "imports" / datetime.now().strftime("%Y%m%d")
     for file in files:
-        filename = file.filename or "unknown_file"
+        filename = _safe_upload_filename(file.filename)
         if Path(filename).suffix.lower() not in SUPPORTED_UPLOAD_EXTENSIONS:
             raise HTTPException(status_code=400, detail=f"暂不支持该文件类型：{filename}")
 
@@ -140,7 +227,7 @@ async def upload(
         task_dir = base_dir / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
         local_path = task_dir / filename
-        local_path.write_bytes(await file.read())
+        await _write_upload_file(file, local_path)
         document = create_document(kb_id, filename, str(local_path), task_id)
 
         task_ids.append(task_id)

@@ -2,6 +2,7 @@
 import sys
 from typing import List, Dict, Any
 from app.conf.embedding_config import embedding_config
+from app.conf.retrieval_config import retrieval_config
 from app.utils.task_utils import add_running_task, add_done_task
 from app.core.logger import logger, node_log
 
@@ -72,7 +73,7 @@ def node_rrf(state):
         (embedding_chunks,1.0),
         (hyde_embedding_chunks,1.0)
     ]
-    entity_list = step_2_rrf_list(param_list,k=60,top=5)
+    entity_list = step_2_rrf_list(param_list, k=60, top=retrieval_config.rrf_top_k)
     state['rrf_chunks'] = entity_list
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     return state

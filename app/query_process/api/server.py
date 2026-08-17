@@ -5,7 +5,7 @@ from threading import Lock
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
@@ -15,7 +15,9 @@ from app.clients.mongo_workspace_utils import (
     ensure_chat_session,
     list_chat_sessions,
     rename_chat_session,
+    list_knowledge_bases,
 )
+from app.clients.milvus_utils import get_milvus_client
 from app.core.logger import PROJECT_ROOT, logger
 from app.query_process.agent.main_graph import query_app
 from app.query_process.agent.state import create_query_default_state
@@ -33,12 +35,13 @@ from app.utils.task_utils import (
     set_task_result,
     update_task_status,
 )
+from app.utils.api_utils import get_cors_origins
 
 
 app = FastAPI(title="PunditRAG query service", description="知识库查询与会话服务")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -82,7 +85,25 @@ def return_query_html():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    checks = {}
+    try:
+        knowledge_bases = list_knowledge_bases()
+        checks["mongo"] = {"status": "ok", "knowledge_bases": len(knowledge_bases)}
+    except Exception as exc:
+        checks["mongo"] = {"status": "error", "detail": str(exc)}
+    try:
+        milvus = get_milvus_client()
+        if not milvus:
+            raise RuntimeError("Milvus client unavailable")
+        checks["milvus"] = {"status": "ok", "collections": len(milvus.list_collections())}
+    except Exception as exc:
+        checks["milvus"] = {"status": "error", "detail": str(exc)}
+
+    healthy = all(check["status"] == "ok" for check in checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+    )
 
 
 class QueryRequest(BaseModel):
@@ -140,6 +161,11 @@ def run_query_graph(
 
 @app.post("/query")
 async def query(req: QueryRequest, background_tasks: BackgroundTasks):
+    if req.kb_ids:
+        known_kb_ids = {item["kb_id"] for item in list_knowledge_bases()}
+        unknown_kb_ids = sorted(set(req.kb_ids) - known_kb_ids)
+        if unknown_kb_ids:
+            raise HTTPException(status_code=404, detail={"unknown_kb_ids": unknown_kb_ids})
     session_id = req.session_id or str(uuid.uuid4())
     run_id = str(uuid.uuid4())
     _register_run(session_id, run_id)
@@ -164,14 +190,19 @@ async def query(req: QueryRequest, background_tasks: BackgroundTasks):
         False,
         req.enable_web_search,
     )
+    if final_state is None:
+        raise HTTPException(
+            status_code=500,
+            detail=get_task_result(run_id, "error") or "查询处理失败",
+        )
     return {
-        "message": "处理完成" if final_state is not None else "处理失败",
+        "message": "处理完成",
         "session_id": session_id,
         "run_id": run_id,
-        "answer": final_state.get("answer", "") if final_state else "",
+        "answer": final_state.get("answer", ""),
         "error": get_task_result(run_id, "error"),
-        "image_urls": final_state.get("image_urls", []) if final_state else [],
-        "sources": final_state.get("sources", []) if final_state else [],
+        "image_urls": final_state.get("image_urls", []),
+        "sources": final_state.get("sources", []),
         "done_list": get_done_task_list(run_id),
     }
 

@@ -50,12 +50,28 @@ def build_source_records(documents: Iterable[Dict[str, Any]]) -> List[Dict[str, 
     return sources
 
 
-def select_cited_sources(answer: str, candidates: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """只返回答案中以 [n] 明确引用的来源，保持首次出现顺序。"""
-    cited_numbers = []
+def extract_citation_numbers(answer: str) -> List[int]:
+    """按首次出现顺序提取答案中的 [n] 引用编号。"""
+    numbers = []
     for value in re.findall(r"\[(\d+)]", answer or ""):
         number = int(value)
-        if number not in cited_numbers:
-            cited_numbers.append(number)
+        if number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def reject_invalid_citations(answer: str, candidates: Iterable[Dict[str, Any]]) -> str:
+    """引用了本轮不存在的来源编号时拒绝整份答案，避免展示假引用。"""
+    candidate_list = list(candidates)
+    valid_indexes = {int(source["index"]) for source in candidate_list}
+    cited_numbers = extract_citation_numbers(answer)
+    if any(number not in valid_indexes for number in cited_numbers):
+        return "当前资料中没有足够信息。"
+    return answer
+
+
+def select_cited_sources(answer: str, candidates: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """只返回答案中以 [n] 明确引用的来源，保持首次出现顺序。"""
+    cited_numbers = extract_citation_numbers(answer)
     source_by_index = {int(source["index"]): source for source in candidates}
     return [source_by_index[number] for number in cited_numbers if number in source_by_index]

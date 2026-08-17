@@ -3,14 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
     container_name: punditrag-app
     env_file:
       - .env.docker
     environment:
       PROJECT_ROOT: /app
-      HF_HUB_DISABLE_XET: "1"
-      HF_HUB_DOWNLOAD_TIMEOUT: "600"
+      MONGO_URL: "mongodb://${MONGO_ROOT_USERNAME:-punditrag}:${MONGO_ROOT_PASSWORD:-punditrag}@mongo:27017/kb002?authSource=admin"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-punditrag}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-punditrag}"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     gpus: all
@@ -38,12 +38,9 @@ services:
       - ./prompts:/app/prompts:ro
       - ./temp-files:/app/temp-files
       - ./models:/app/models
-      - ./cache/modelscope:/app/.cache/modelscope
       - ./cache/huggingface:/app/.cache/huggingface
     depends_on:
       milvus:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
       mongo:
         condition: service_healthy
@@ -118,40 +115,18 @@ services:
       retries: 5
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5.26-community
-    container_name: punditrag-neo4j
-    environment:
-      NEO4J_AUTH: neo4j/123123123
-      NEO4J_dbms_security_auth__enabled: "true"
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
-      - neo4j-import:/var/lib/neo4j/import
-      - neo4j-plugins:/plugins
-    healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p 123123123 'RETURN 1'"]
-      interval: 30s
-      start_period: 60s
-      timeout: 20s
-      retries: 5
-    restart: unless-stopped
-
   mongo:
     image: mongo:7
     container_name: punditrag-mongo
     environment:
-      MONGO_INITDB_ROOT_USERNAME: punditrag
-      MONGO_INITDB_ROOT_PASSWORD: "123123123"
+      MONGO_INITDB_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:-punditrag}"
+      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:-123123123}"
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok", "-u", "punditrag", "-p", "123123123", "--authenticationDatabase", "admin"]
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin"]
       interval: 30s
       start_period: 30s
       timeout: 20s
@@ -162,8 +137,8 @@ services:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     container_name: punditrag-minio
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     command: minio server /data --console-address ":9001"
     ports:
       - "9100:9000"
@@ -183,9 +158,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     entrypoint: >
       /bin/sh -c "
-      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
+      until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do sleep 2; done;
       mc mb --ignore-existing local/knowledge-base-files;
       exit 0;
       "
@@ -195,8 +173,4 @@ volumes:
   milvus-data:
   milvus-minio-data:
   mongo-data:
-  neo4j-data:
-  neo4j-import:
-  neo4j-logs:
-  neo4j-plugins:
   minio-data:

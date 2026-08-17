@@ -72,7 +72,12 @@ def node_web_search_mcp(state):
     add_running_task(run_id, node_name, is_stream)
 
     rewritten_query = step_1_data_validate(state)
-    mcp_result = run_async_search(rewritten_query, count=10)
+    try:
+        mcp_result = run_async_search(rewritten_query, count=10)
+    except Exception as exc:
+        logger.warning(f"联网搜索不可用，继续执行本地检索分支：{exc}")
+        add_done_task(run_id, node_name, is_stream)
+        return {"web_search_docs": []}
 
     result_text = ""
     for content in mcp_result.content or []:
@@ -81,7 +86,11 @@ def node_web_search_mcp(state):
             result_text = text
             break
 
-    result_dict = json.loads(result_text) if result_text else {}
+    try:
+        result_dict = json.loads(result_text) if result_text else {}
+    except json.JSONDecodeError:
+        logger.warning("联网搜索返回了无法解析的内容，已忽略该分支")
+        result_dict = {}
     pages = result_dict.get("pages", []) if isinstance(result_dict, dict) else []
     logger.info(f"网络搜索返回{len(pages)}条结果")
 

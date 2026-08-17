@@ -111,7 +111,33 @@ def test_step_4_chunk_topk_with_gap():
     with patch.object(node_rerank_module, "RERANK_GAP_ABS", 0.1):
         chunks = [{"score": s} for s in [0.95, 0.6, 0.59, 0.58, 0.57]]
         result = node_rerank_module.step_4_chunk_topk(chunks)
-        assert len(result) == 1, "断崖出现在第1名后，应只保留 1 个"
+        assert len(result) == 2, "断崖出现在第1名后，仍应保留至少 2 个证据"
+
+
+def test_step_4_keeps_secondary_evidence_above_min_score():
+    chunks = [{"score": s} for s in [0.722, 0.096, 0.0456]]
+    result = node_rerank_module.step_4_chunk_topk(chunks)
+    assert [chunk["score"] for chunk in result] == [0.722, 0.096]
+
+
+def test_low_score_candidates_reach_answer_model_as_fallback():
+    """低于阈值不等于没有资料，回答模型仍应获得少量候选用于核验。"""
+    state = build_state()
+    fake_reranker = MagicMock()
+    fake_reranker.compute_score.return_value = [0.04, 0.03, 0.02, 0.01, 0.005]
+
+    with (
+        patch.object(node_rerank_module, "get_reranker_model", return_value=fake_reranker),
+        patch.object(node_rerank_module, "add_running_task"),
+        patch.object(node_rerank_module, "add_done_task"),
+    ):
+        result_state = node_rerank_module.node_rerank(state)
+
+    assert result_state["answer"] == ""
+    assert result_state["evidence_quality"] == "low"
+    assert len(result_state["reranked_docs"]) == node_rerank_module.RERANK_FALLBACK_TOPK
+    assert all(chunk.get("low_confidence") is True for chunk in result_state["reranked_docs"])
+    assert [chunk["score"] for chunk in result_state["reranked_docs"]] == [0.04, 0.03, 0.02]
 
 
 def test_node_rerank_full():
@@ -137,6 +163,8 @@ if __name__ == "__main__":
         test_step_3_rerank_score_and_sort,
         test_step_4_chunk_topk_no_gap,
         test_step_4_chunk_topk_with_gap,
+        test_step_4_keeps_secondary_evidence_above_min_score,
+        test_low_score_candidates_reach_answer_model_as_fallback,
         test_node_rerank_full,
     ]
     passed = 0

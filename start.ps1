@@ -1,8 +1,16 @@
-param()
+param(
+    [switch]$Build
+)
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
+$dockerEnv = Join-Path $projectRoot ".env.docker"
+
+if (-not (Test-Path -LiteralPath $dockerEnv)) {
+    Write-Host "Missing .env.docker. Copy .env.docker.example and fill in the API credentials first." -ForegroundColor Red
+    exit 1
+}
 
 function Test-Url {
     param([string]$Url)
@@ -22,17 +30,32 @@ try {
 }
 catch {
     Write-Host "Docker Desktop is not running. Start Docker Desktop first." -ForegroundColor Red
-    Read-Host "Press Enter to exit"
     exit 1
 }
 
-Write-Host "[PunditRAG] Building changed layers and starting all services..." -ForegroundColor Cyan
-docker compose up -d --build
+$composeArgs = @(
+    "compose",
+    "--env-file", ".env.docker",
+    "up", "-d",
+    "--remove-orphans"
+)
 
-if ($LASTEXITCODE -ne 0) {
+docker image inspect punditrag-app:latest *> $null
+$imageExists = $LASTEXITCODE -eq 0
+if ($Build -or -not $imageExists) {
+    $composeArgs += "--build"
+    Write-Host "[PunditRAG] Building the application image and starting services..." -ForegroundColor Cyan
+}
+else {
+    Write-Host "[PunditRAG] Starting services with the existing image..." -ForegroundColor Cyan
+}
+
+& docker @composeArgs
+$composeExitCode = $LASTEXITCODE
+
+if ($composeExitCode -ne 0) {
     Write-Host "Startup failed. Run: docker compose logs app" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit $LASTEXITCODE
+    exit $composeExitCode
 }
 
 Write-Host "[PunditRAG] Waiting for services..." -ForegroundColor Cyan
@@ -57,8 +80,7 @@ while ((Get-Date) -lt $deadline) {
 Write-Host ""
 if (-not ($queryReady -and $importReady)) {
     Write-Host "Services did not become ready. Recent app logs:" -ForegroundColor Yellow
-    docker compose logs --tail 80 app
-    Read-Host "Press Enter to exit"
+    docker compose --env-file .env.docker logs --tail 80 app
     exit 1
 }
 

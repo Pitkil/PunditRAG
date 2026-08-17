@@ -13,6 +13,7 @@ from app.import_process.agent.api import server as import_server
 from app.query_process.agent.nodes import node_answer_output as answer_module
 from app.query_process.agent.nodes import node_search_embedding as search_module
 from app.query_process.agent.nodes import node_search_embedding_hyde as hyde_module
+from app.query_process.agent import retrieval_utils
 from app.query_process.api import server as query_server
 
 
@@ -21,21 +22,32 @@ def test_knowledge_base_filter():
         (search_module, "step_3_milvus_hybrid_search"),
         (hyde_module, "step_4_mivlus_hybrid_search"),
     ):
-        captured = {}
-
-        def fake_requests(dense, sparse, expr=None, **kwargs):
-            captured["expr"] = expr
-            return ["request"]
-
         with (
             patch.object(module, "get_milvus_client", return_value=MagicMock()),
-            patch.object(module, "create_hybrid_search_requests", side_effect=fake_requests),
-            patch.object(module, "hybrid_search", return_value=[[]]),
+            patch.object(module, "search_chunks", return_value=[]) as search_chunks,
         ):
             getattr(module, function_name)([0.1], {1: 0.2}, ["学习资料"], ["kb-test"])
 
-        assert 'item_name in ["学习资料"]' in captured["expr"]
-        assert 'kb_id in ["kb-test"]' in captured["expr"]
+        assert search_chunks.call_args.args[-2:] == (["学习资料"], ["kb-test"])
+
+
+def test_topic_search_is_an_expansion_not_a_hard_filter():
+    captured_expressions = []
+
+    def fake_requests(dense, sparse, expr=None, **kwargs):
+        captured_expressions.append(expr)
+        return ["request"]
+
+    with (
+        patch.object(retrieval_utils, "create_hybrid_search_requests", side_effect=fake_requests),
+        patch.object(retrieval_utils, "hybrid_search", return_value=[[]]),
+    ):
+        retrieval_utils.search_chunks(
+            MagicMock(), [0.1], {1: 0.2}, ["学习资料"], ["kb-test"]
+        )
+
+    assert captured_expressions[0] == 'kb_id in ["kb-test"]'
+    assert 'item_name in ["学习资料"]' in captured_expressions[1]
 
 
 def test_answer_sources():
@@ -74,6 +86,7 @@ def test_workspace_api_contract():
 
     with (
         patch.object(query_server, "list_chat_sessions", return_value=[]),
+        patch.object(query_server, "list_knowledge_bases", return_value=knowledge_bases),
         patch.object(
             query_server,
             "ensure_chat_session",
@@ -115,7 +128,12 @@ def test_workspace_api_contract():
 
 
 if __name__ == "__main__":
-    tests = [test_knowledge_base_filter, test_answer_sources, test_workspace_api_contract]
+    tests = [
+        test_knowledge_base_filter,
+        test_topic_search_is_an_expansion_not_a_hard_filter,
+        test_answer_sources,
+        test_workspace_api_contract,
+    ]
     passed = 0
     logger.info("=== 开始执行工作台功能回归测试 ===")
     for test_function in tests:

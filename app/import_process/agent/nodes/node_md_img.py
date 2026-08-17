@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Dict, List, Tuple
+from urllib.parse import quote
 from langchain.messages import HumanMessage
 from minio.deleteobjects import DeleteObject
 from app.clients.minio_utils import get_minio_client
@@ -135,9 +136,11 @@ def step_4(image_context_list, image_summaries_dict, md_content, object_scope) -
                  file_path=str(image_path),
                  content_type=str(mimetypes.guess_type(image_name)[0])
              )
-             # 拼接图片的网络地址  端点 + 桶 + 对象名
-             protocol = "https" if minio_config.minio_secure else "http"
-             image_minio_url = f"{protocol}://{minio_config.public_endpoint}/{minio_config.bucket_name}/{image_object_name}"
+             if minio_config.public_read:
+                 protocol = "https" if minio_config.minio_secure else "http"
+                 image_minio_url = f"{protocol}://{minio_config.public_endpoint}/{minio_config.bucket_name}/{image_object_name}"
+             else:
+                 image_minio_url = f"{minio_config.asset_base_url}/{quote(image_object_name, safe='/')}"
              logger.debug(f"图片:{image_name}上传成功!回显地址:{image_minio_url}")
              # 存储图片和对应网络地址对
              image_url_dict[image_name] = image_minio_url

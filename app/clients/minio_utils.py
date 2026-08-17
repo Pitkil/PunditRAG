@@ -28,19 +28,26 @@ def create_minio_bucket(client: Minio):
     else:
         logger.info(f"MinIO存储桶[{bucket_name}]已存在，无需重复创建")
 
-    bucket_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Principal": {"AWS": ["*"]},
-                "Action": ["s3:GetObject"],
-                "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
-            }
-        ],
-    }
-    client.set_bucket_policy(bucket_name, json.dumps(bucket_policy))
-    logger.info(f"MinIO存储桶[{bucket_name}]公开读策略已设置")
+    if minio_config.public_read:
+        bucket_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": ["*"]},
+                    "Action": ["s3:GetObject"],
+                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
+                }
+            ],
+        }
+        client.set_bucket_policy(bucket_name, json.dumps(bucket_policy))
+        logger.warning(f"MinIO存储桶[{bucket_name}]启用了公开读策略")
+    else:
+        try:
+            client.delete_bucket_policy(bucket_name)
+        except Exception as exc:
+            logger.debug(f"MinIO存储桶[{bucket_name}]没有可删除的公开策略：{exc}")
+        logger.info(f"MinIO存储桶[{bucket_name}]保持私有")
 
 
 def get_minio_client():

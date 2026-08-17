@@ -1,0 +1,23 @@
+{
+  "name": "selfbuilt_zh_qa_v2",
+  "documents": [
+    "documents/万用表RS-12的使用.md",
+    "documents/hak180使用说明书.md"
+  ],
+  "cases": [
+    {"qid": "q001", "query": "RS-12数字万用表说明书中“编号”字段的值是多少？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["123-1939"]},
+    {"qid": "q002", "query": "测量直流电压时，红色表笔应该插入哪个端口？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["红色表笔", "V端口"]},
+    {"qid": "q003", "query": "万用表在10A档测量电流时，一次测量时间不能超过多久？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["30秒"]},
+    {"qid": "q004", "query": "万用表的输入阻抗是多少？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["1MΩ"]},
+    {"qid": "q005", "query": "万用表交流电压的测量频宽是多少？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["45Hz", "450Hz"]},
+    {"qid": "q006", "query": "万用表使用的电池是什么型号？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["9V", "NEDA1604"], "forbidden_terms": ["6F22"]},
+    {"qid": "q007", "query": "万用表电池电量不足时，显示屏会显示什么符号？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["BAT"]},
+    {"qid": "q008", "query": "万用表短路蜂鸣测试时，电阻小于多少欧姆会产生蜂鸣？", "answerable": true, "expected_doc": "万用表RS-12的使用", "expected_terms": ["30", "蜂鸣"]},
+    {"qid": "q009", "query": "HAK 180 是什么类型的设备？", "answerable": true, "expected_doc": "hak180使用说明书", "expected_terms": ["烫金机"]},
+    {"qid": "q010", "query": "HAK 180 采用什么技术将烫金膜转印到介质上？", "answerable": true, "expected_doc": "hak180使用说明书", "expected_terms": ["热定影"]},
+    {"qid": "q011", "query": "HAK 180 需要安装额外的驱动程序或软件吗？", "answerable": true, "expected_doc": "hak180使用说明书", "expected_terms": ["不需要"]},
+    {"qid": "q012", "query": "HAK 180 与哪些烫金膜盒兼容？", "answerable": true, "expected_doc": "hak180使用说明书", "expected_terms": ["全幅", "半幅"]},
+    {"qid": "q013", "query": "火星上是否存在生命？", "answerable": false, "expected_doc": "", "expected_terms": []},
+    {"qid": "q014", "query": "2028年夏季奥运会将在哪个城市举办？", "answerable": false, "expected_doc": "", "expected_terms": []}
+  ]
+}

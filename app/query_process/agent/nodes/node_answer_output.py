@@ -10,6 +10,7 @@ from app.clients.mongo_history_utils import save_chat_message
 from app.query_process.agent.source_utils import (
     build_source_records,
     deduplicate_documents,
+    reject_invalid_citations,
     select_cited_sources,
 )
 import re
@@ -55,26 +56,37 @@ def step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_quer
             else f"搜索排序:第{chunk.get('search_rank', number)}位（未经过本地重排序）"
         )
         context_chunk_list.append(
-            f"来源[{number}]: 标题:{chunk.get('title') or '未命名来源'} {score_text} "
-            f"类型:{'网络搜索' if chunk.get('type') == 'web' else '知识库文档'}"
-            f"\n"
-            f"内容:{chunk.get('text') or chunk.get('content') or ''}"
+            f"<source id=\"{number}\" type=\"{'web' if chunk.get('type') == 'web' else 'knowledge_base'}\">\n"
+            f"标题:{chunk.get('title') or '未命名来源'} {score_text}\n"
+            f"内容:\n{chunk.get('text') or chunk.get('content') or ''}\n"
+            f"</source>"
         )
     context_chunk_str = "\n\n".join(context_chunk_list)
 
     history_text = "没有历史聊天记录!"
     if history and len(history) > 0:
-        history_text = ""
+        history_lines = []
         for msg in history:
-            history_text += \
-                (f"角色:{msg['role']},内容:{msg['rewritten_query'] if msg['role'] == 'user' else msg['text']}"
-                 f",关联主体: {'、'.join(msg.get('item_names',[]))}\n")
+            if msg.get("role") != "user":
+                continue
+            history_lines.append(
+                f"角色:user,内容:{msg.get('rewritten_query') or msg.get('text', '')}"
+                f",关联主体: {'、'.join(msg.get('item_names', []))}"
+            )
+        history_text = "\n".join(history_lines) or "没有历史用户问题!"
 
     item_name = "本次关联主体:" + ",".join(item_names) if item_names and len(item_names) > 0 else '没有关联主体'
     # 加载提示词
     available_images = state.get("image_urls", [])
+    evidence_quality = state.get("evidence_quality", "qualified")
+    evidence_notice = {
+        "qualified": "候选内容已通过相关性阈值，但仍须逐条核对正文后作答。",
+        "low": "候选内容的重排分低，仅用于让你核验是否存在间接但有效的依据；不得为了回答而强行关联。",
+        "unscored": "候选内容未经过本地重排，请严格依据正文判断是否足以作答。",
+    }.get(evidence_quality, "未提供可用候选内容。")
     prompt = load_prompt("answer_out",context = context_chunk_str,
                 history = history_text, item_names = item_name, question = rewritten_query,
+                evidence_notice = evidence_notice,
                 image_urls = "\n".join(available_images) if available_images else "无可用图片")
 
     return prompt
@@ -144,11 +156,12 @@ def step_5_filter_answer_images(state):
     """仅保留参考资料中真实存在的图片 URL，并移除模型编造的图片区块。"""
     answer = state.get("answer") or ""
     allowed_images = set(state.get("image_urls") or [])
-    image_block = re.compile(r"\n*【图片】\s*\n(?P<urls>(?:\s*<?https?://[^\s>]+>?\s*\n?)+)\s*$", re.IGNORECASE)
+    # 模型可能在无图片时输出“【图片】无可用图片”；先识别末尾图片区块，再只保留白名单 URL。
+    image_block = re.compile(r"\n*【图片】\s*\n(?P<body>[\s\S]*?)\s*$", re.IGNORECASE)
     match = image_block.search(answer)
     selected_images = []
     if match:
-        for image_url in re.findall(r"https?://[^\s>]+", match.group("urls"), re.IGNORECASE):
+        for image_url in re.findall(r"https?://[^\s>]+", match.group("body"), re.IGNORECASE):
             if image_url in allowed_images and image_url not in selected_images:
                 selected_images.append(image_url)
         answer = answer[:match.start()].rstrip()
@@ -162,7 +175,17 @@ def step_5_filter_answer_images(state):
 def step_5_build_sources(state, reranked_docs):
     """仅返回答案实际引用的去重来源，避免把候选上下文冒充证据。"""
     candidates = build_source_records(reranked_docs)
-    state["sources"] = select_cited_sources(state.get("answer", ""), candidates)
+    original_answer = state.get("answer", "")
+    validated_answer = reject_invalid_citations(original_answer, candidates)
+    if validated_answer != original_answer:
+        logger.warning("答案引用了本轮不存在的来源编号，已拒绝该答案")
+    state["answer"] = validated_answer
+    state["sources"] = select_cited_sources(validated_answer, candidates)
+    set_task_result(
+        state.get("run_id") or state.get("session_id"),
+        "answer",
+        validated_answer,
+    )
 
 @step_log("step_6_save_chat_history")
 def step_6_save_chat_history(state):

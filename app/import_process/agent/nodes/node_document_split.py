@@ -1,4 +1,6 @@
 import json
+import math
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -7,10 +9,54 @@ from app.core.logger import logger, node_log, step_log
 from app.import_process.agent.state import ImportGraphState
 from app.utils.task_utils import add_done_task, add_running_task
 
-# 单个语义块的最大长度。超过后再做二次切分。
-CHUNK_MAX_SIZE = 500
-CHUNK_SIZE = 200
-CHUNK_OVERLAP = 20
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE_TOKENS", "500"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP_TOKENS", "80"))
+DENSE_SPEC_GROUP_LINES = int(os.getenv("DENSE_SPEC_GROUP_LINES", "5"))
+DENSE_SPEC_OVERLAP_LINES = int(os.getenv("DENSE_SPEC_OVERLAP_LINES", "1"))
+
+
+def estimate_token_count(text: str) -> int:
+    """Approximate multilingual token count without loading a model tokenizer."""
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin_word_count = len(re.findall(r"[A-Za-z0-9_]+", text))
+    remaining = re.sub(r"[\u3400-\u9fffA-Za-z0-9_\s]", "", text)
+    return cjk_count + latin_word_count + math.ceil(len(remaining) / 4)
+
+
+def split_dense_spec_lines(content: str) -> List[str]:
+    """Split dense key/value specification lists while preserving their heading."""
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if len(lines) < 7:
+        return [content]
+
+    heading = lines[0] if re.match(r"^#{1,6}\s+", lines[0]) else ""
+    body_lines = lines[1:] if heading else lines
+    if len(body_lines) < 6:
+        return [content]
+
+    spec_lines = [
+        line for line in body_lines
+        if not re.match(r"^(?:[-*+]\s+|\d+[.)、]\s*)", line)
+        and not line.startswith("<table")
+        and len(line) <= 180
+        and re.search(r"\S\s+\S", line)
+    ]
+    if len(spec_lines) / len(body_lines) < 0.75:
+        return [content]
+
+    group_size = max(2, DENSE_SPEC_GROUP_LINES)
+    overlap = min(max(0, DENSE_SPEC_OVERLAP_LINES), group_size - 1)
+    step = group_size - overlap
+    groups = []
+    for start in range(0, len(body_lines), step):
+        selected = body_lines[start:start + group_size]
+        if not selected:
+            continue
+        group_lines = ([heading] if heading else []) + selected
+        groups.append("\n\n".join(group_lines))
+        if start + group_size >= len(body_lines):
+            break
+    return groups if len(groups) > 1 else [content]
 
 
 @step_log("step_1")
@@ -100,9 +146,14 @@ def step_3(chunks: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     第二次切分：把过长的语义块拆成更小的片段。
     """
     splitter = RecursiveCharacterTextSplitter(
-        separators=["\n\n", "\n", "。", "；", "，", ".", "!", "?", ";", " "],
+        separators=[
+            "\n\n", "</table>", "</tr>", "\n", "。", "；", ". ", "! ", "? ",
+            "，", ";", " ", "",
+        ],
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
+        length_function=estimate_token_count,
+        keep_separator=True,
     )
 
     final_chunks: List[Dict[str, Any]] = []
@@ -112,7 +163,22 @@ def step_3(chunks: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         title = chunk["title"]
         file_title = chunk["file_title"]
 
-        if len(content) <= CHUNK_MAX_SIZE:
+        dense_spec_chunks = split_dense_spec_lines(content)
+        if len(dense_spec_chunks) > 1:
+            for index, split_content in enumerate(dense_spec_chunks, start=1):
+                final_chunks.append(
+                    {
+                        "content": split_content,
+                        "title": f"{title}_{index}",
+                        "parent_title": title,
+                        "part": index,
+                        "file_title": file_title,
+                        "token_count": estimate_token_count(split_content),
+                    }
+                )
+            continue
+
+        if estimate_token_count(content) <= CHUNK_SIZE:
             final_chunks.append(
                 {
                     "content": content,
@@ -120,12 +186,17 @@ def step_3(chunks: List[Dict[str, str]]) -> List[Dict[str, Any]]:
                     "parent_title": title,
                     "part": 1,
                     "file_title": file_title,
+                    "token_count": estimate_token_count(content),
                 }
             )
             continue
 
         split_contents = splitter.split_text(content)
         for index, split_content in enumerate(split_contents, start=1):
+            if not split_content.strip():
+                continue
+            if title != "default" and not split_content.lstrip().startswith(title):
+                split_content = f"{title}\n\n{split_content}"
             final_chunks.append(
                 {
                     "content": split_content,
@@ -133,6 +204,7 @@ def step_3(chunks: List[Dict[str, str]]) -> List[Dict[str, Any]]:
                     "parent_title": title,
                     "part": index,
                     "file_title": file_title,
+                    "token_count": estimate_token_count(split_content),
                 }
             )
 

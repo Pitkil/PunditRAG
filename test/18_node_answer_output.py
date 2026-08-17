@@ -82,7 +82,22 @@ def test_step_2_rejects_empty_docs():
 
 
 def test_step_3_make_prompt():
-    state = build_state()
+    state = build_state(
+        evidence_quality="low",
+        history=[
+            {
+                "role": "assistant",
+                "text": "上一轮助手结论[7]",
+                "item_names": ["旧主题"],
+            },
+            {
+                "role": "user",
+                "rewritten_query": "如何测量直流电压？",
+                "text": "",
+                "item_names": ["RS-12数字万用表"],
+            },
+        ],
+    )
     history, docs, item_names, query = answer_module.step_2_data_validates(state)
 
     with patch.object(answer_module, "load_prompt", return_value="组装后的提示词") as mock_load:
@@ -91,10 +106,16 @@ def test_step_3_make_prompt():
     assert prompt == "组装后的提示词"
     _, kwargs = mock_load.call_args
     assert "交流电压测量" in kwargs["context"]
-    assert "知识库文档" in kwargs["context"]
-    assert "网络搜索" in kwargs["context"]
+    assert '<source id="1" type="knowledge_base">' in kwargs["context"]
+    assert 'type="web"' in kwargs["context"]
+    assert "</source>" in kwargs["context"]
     assert "RS-12数字万用表" in kwargs["item_names"]
+    assert "如何测量直流电压" in kwargs["history"]
+    assert "上一轮助手结论" not in kwargs["history"]
+    assert "[7]" not in kwargs["history"]
     assert kwargs["question"] == state["rewritten_query"]
+    assert "重排分低" in kwargs["evidence_notice"]
+    assert "强行关联" in kwargs["evidence_notice"]
 
 
 def test_step_4_generate_answer_non_stream():
@@ -132,6 +153,44 @@ def test_step_4_generate_answer_stream():
     assert mock_push.call_count == 1
     assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流式答案"]
     mock_set_result.assert_called_once_with(state["session_id"], "answer", "流式答案")
+
+
+def test_step_5_filter_answer_images_removes_invalid_image_block():
+    state = build_state(
+        answer="正文答案\n\n【图片】\n无可用图片",
+        image_urls=["https://example.com/allowed.png"],
+    )
+
+    with patch.object(answer_module, "set_task_result"):
+        answer_module.step_5_filter_answer_images(state)
+
+    assert state["answer"] == "正文答案"
+    assert state["image_urls"] == []
+
+
+def test_step_5_build_sources_rejects_stale_history_citations():
+    state = build_state(answer="沿用上一轮结论[3][4]")
+
+    with patch.object(answer_module, "set_task_result") as mock_set_result:
+        answer_module.step_5_build_sources(state, state["reranked_docs"])
+
+    assert state["answer"] == "当前资料中没有足够信息。"
+    assert state["sources"] == []
+    mock_set_result.assert_called_once_with(
+        state["session_id"],
+        "answer",
+        "当前资料中没有足够信息。",
+    )
+
+
+def test_step_5_build_sources_keeps_current_citations():
+    state = build_state(answer="测量时不要触碰表笔金属部分。[2]")
+
+    with patch.object(answer_module, "set_task_result"):
+        answer_module.step_5_build_sources(state, state["reranked_docs"])
+
+    assert state["answer"] == "测量时不要触碰表笔金属部分。[2]"
+    assert [source["index"] for source in state["sources"]] == [2]
 
 
 def test_node_answer_output_non_stream():
@@ -177,6 +236,9 @@ if __name__ == "__main__":
         test_step_3_make_prompt,
         test_step_4_generate_answer_non_stream,
         test_step_4_generate_answer_stream,
+        test_step_5_filter_answer_images_removes_invalid_image_block,
+        test_step_5_build_sources_rejects_stale_history_citations,
+        test_step_5_build_sources_keeps_current_citations,
         test_node_answer_output_non_stream,
         test_node_answer_output_stream,
     ]

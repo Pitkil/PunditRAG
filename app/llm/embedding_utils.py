@@ -2,6 +2,7 @@ from pathlib import Path
 from threading import Lock
 
 from huggingface_hub import snapshot_download
+import numpy as np
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from app.core.logger import logger
 from app.conf.embedding_config import embedding_config
@@ -9,6 +10,9 @@ from app.conf.embedding_config import embedding_config
 # 模型单例对象，避免重复初始化
 bge_m3_ef = None
 _bge_m3_lock = Lock()
+# FlagEmbedding mutates the shared model when FP16 encoding starts. Serialize
+# inference so concurrent query branches cannot race on model dtype.
+_bge_m3_encode_lock = Lock()
 
 def get_bge_m3_ef():
     global bge_m3_ef
@@ -92,8 +96,11 @@ def generate_embeddings(texts):
     try:
         # 加载BGE-M3模型单例
         model = get_bge_m3_ef()
-        # 模型编码生成向量，返回dense（稠密向量）+sparse（CSR格式稀疏向量）
-        embeddings = model.encode_documents(texts)
+        # The query graph runs the original and HyDE branches concurrently.
+        # FlagEmbedding's FP16 path calls model.half() inside encode_documents,
+        # so the shared model must be encoded under one process-local lock.
+        with _bge_m3_encode_lock:
+            embeddings = model.encode_documents(texts)
         logger.debug(f"模型编码完成，开始解析稀疏向量格式，共{len(texts)}条")
 
         # 初始化稀疏向量处理结果，解析为字典格式（适配序列化/存储）
@@ -109,14 +116,14 @@ def generate_embeddings(texts):
             # 提取第i个文本的稀疏向量权重
             sparse_data = embeddings["sparse"].data[
                 embeddings["sparse"].indptr[i]:embeddings["sparse"].indptr[i + 1]
-            ].tolist()
+            ].astype(np.float32, copy=False).tolist()
             # 构造{特征索引: 归一化权重}的稀疏向量字典
             sparse_dict = {k: v for k, v in zip(sparse_indices, sparse_data)}
             processed_sparse.append(sparse_dict)
 
         # 构造最终返回结果，稠密向量转列表
         result = {
-            "dense": [emb.tolist() for emb in embeddings["dense"]],  # 嵌套列表，与输入文本一一对应
+            "dense": [np.asarray(emb, dtype=np.float32).tolist() for emb in embeddings["dense"]],  # 嵌套列表，与输入文本一一对应
             "sparse": processed_sparse  # 字典列表，模型已做L2归一化
         }
         logger.success(f"{len(texts)}条文本向量生成完成，格式已适配工业级使用")
