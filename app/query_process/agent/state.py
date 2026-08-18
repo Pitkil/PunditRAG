@@ -9,7 +9,9 @@ class QueryGraphState(TypedDict):
     session_id: str  # 会话唯一标识
     run_id: str  # 单次查询运行标识，用于隔离任务状态和 SSE
     original_query: str  # 用户原始问题
+    scope_mode: str  # all / knowledge_base / documents
     kb_ids: List[str]  # 本轮允许检索的知识库
+    document_ids: List[str]  # 本轮明确绑定的文档
     enable_web_search: bool  # 是否启用联网搜索
 
     # 检索过程中的中间数据
@@ -31,6 +33,9 @@ class QueryGraphState(TypedDict):
     # 辅助信息
     item_names: List[str]  # 提取出的商品名称
     rewritten_query: str  # 改写后的问题
+    query_mode: str  # lookup / explain / summarize / compare / clarify
+    query_depth: str  # brief / normal / deep
+    query_aspects: List[str]  # 深度讲解或比较时需要覆盖的方面
     history: list  # 历史对话记录
     is_stream: bool  # 是否流式输出标记
 
@@ -40,7 +45,9 @@ query_graph_default_state: QueryGraphState = {
     "session_id": "",
     "run_id": "",
     "original_query": "",
+    "scope_mode": "knowledge_base",
     "kb_ids": [],
+    "document_ids": [],
     "enable_web_search": True,
     "embedding_chunks": [],
     "hyde_embedding_chunks": [],
@@ -54,6 +61,9 @@ query_graph_default_state: QueryGraphState = {
     "sources": [],
     "item_names": [],
     "rewritten_query": "",
+    "query_mode": "lookup",
+    "query_depth": "normal",
+    "query_aspects": [],
     "history": [],
     "is_stream": False
 }

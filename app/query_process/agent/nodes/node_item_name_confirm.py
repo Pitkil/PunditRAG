@@ -27,6 +27,47 @@ def get_direct_chat_answer(query):
         return "你好，我是 PunditRAG。你可以向我询问已导入资料中的内容。"
     return ""
 
+
+QUERY_MODES = {"lookup", "explain", "summarize", "compare", "clarify"}
+QUERY_DEPTHS = {"brief", "normal", "deep"}
+
+
+def _fallback_query_mode(query: str) -> str:
+    value = str(query or "")
+    if any(word in value for word in ("比较", "对比", "区别", "差异", "异同")):
+        return "compare"
+    if any(word in value for word in ("总结", "概括", "梳理", "提纲", "核心内容", "主要内容")):
+        return "summarize"
+    if any(word in value for word in ("讲解", "解释", "分析", "原理", "流程", "为什么", "详细", "深入", "展开")):
+        return "explain"
+    return "lookup"
+
+
+def _fallback_query_depth(query: str) -> str:
+    value = str(query or "")
+    if any(word in value for word in ("详细", "深入", "全面", "系统", "展开", "继续", "更具体", "再补充")):
+        return "deep"
+    if any(word in value for word in ("简要", "简短", "一句话")):
+        return "brief"
+    return "normal"
+
+
+def _recent_document_ids(history_message_list, original_query: str) -> list[str]:
+    follow_up_words = ("继续", "详细一点", "更详细", "展开", "再说", "补充", "这个", "这篇", "该文", "上述", "它")
+    if not any(word in str(original_query or "") for word in follow_up_words):
+        return []
+    for message in reversed(history_message_list):
+        if message.get("role") != "assistant":
+            continue
+        document_ids = [
+            source.get("document_id")
+            for source in message.get("sources") or []
+            if source.get("document_id")
+        ]
+        if document_ids:
+            return list(dict.fromkeys(document_ids))
+    return []
+
 @step_log("node_item_name_confirm")
 def step_1_data_validates(state):
     """校验并返回会话 ID 和原始问题。"""
@@ -54,8 +95,14 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
             else message.get("text", "")
         )
         related_names = message.get("item_names") or []
+        related_documents = message.get("document_ids") or [
+            source.get("document_id")
+            for source in message.get("sources") or []
+            if source.get("document_id")
+        ]
         history_lines.append(
-            f"角色：{role}，内容：{content}，关联主题或实体：{'、'.join(related_names)}"
+            f"角色：{role}，内容：{str(content)[:1600]}，关联主题或实体：{'、'.join(related_names)}，"
+            f"关联文档：{'、'.join(related_documents)}"
         )
 
     prompt = load_prompt(
@@ -79,9 +126,24 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
         logger.warning("模型返回的 item_names 格式无效，已使用空列表")
         item_names = []
 
+    mode = str(result.get("mode") or "").strip().lower()
+    depth = str(result.get("depth") or "").strip().lower()
+    aspects = result.get("aspects") or []
+    if mode not in QUERY_MODES:
+        mode = _fallback_query_mode(original_query)
+    if depth not in QUERY_DEPTHS:
+        depth = _fallback_query_depth(original_query)
+    if isinstance(aspects, str):
+        aspects = [aspects]
+    if not isinstance(aspects, list):
+        aspects = []
+
     return {
         "rewritten_query": rewritten_query,
         "item_names": list(dict.fromkeys(str(name).strip() for name in item_names if str(name).strip())),
+        "mode": mode,
+        "depth": depth,
+        "aspects": list(dict.fromkeys(str(value).strip() for value in aspects if str(value).strip()))[:8],
     }
 
 @step_log("step_4_vector_query_item_name")
@@ -109,7 +171,7 @@ def step_4_vector_query_item_name(item_names, kb_ids=None):
     vector_dict = {}
     for index, item_name in enumerate(item_names):
         requests = create_hybrid_search_requests(
-            np.asarray(embeddings["dense"][index], dtype=np.float32),
+            np.asarray(embeddings["dense"][index], dtype=np.float16),
             embeddings["sparse"][index],
             expr=(
                 f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}"
@@ -167,12 +229,22 @@ def step_5_select_item_list(vector_dict):
     }
 
 @step_log("step_6_deal_state")
-def step_6_deal_state(state, final_result, rewritten_query):
+def step_6_deal_state(state, final_result, query_plan):
     """确定主题扩展词；主题不明确时仍在显式知识库范围内检索。"""
     confirmed_names = final_result.get("confirmed_item_name_list", [])
     optional_names = final_result.get("options_item_name_list", [])
 
+    if isinstance(query_plan, str):
+        query_plan = {"rewritten_query": query_plan}
+    rewritten_query = query_plan.get("rewritten_query") or state.get("original_query", "")
     state["rewritten_query"] = rewritten_query
+    state["query_mode"] = query_plan.get("mode") or _fallback_query_mode(rewritten_query)
+    state["query_depth"] = query_plan.get("depth") or _fallback_query_depth(rewritten_query)
+    state["query_aspects"] = query_plan.get("aspects") or []
+    if state["query_aspects"] and state["query_mode"] in {"explain", "compare"}:
+        aspect_context = "、".join(state["query_aspects"])
+        if aspect_context not in state["rewritten_query"]:
+            state["rewritten_query"] = f"{state['rewritten_query']}（需要覆盖：{aspect_context}）"
     state["answer"] = ""
 
     if confirmed_names:
@@ -185,6 +257,8 @@ def step_6_deal_state(state, final_result, rewritten_query):
     state["item_names"] = []
     if optional_names:
         logger.info(f"主题匹配置信度不足，将执行知识库全局检索：{optional_names}")
+    if state["query_mode"] == "clarify" and not state.get("document_ids"):
+        state["answer"] = "请先明确要查询的资料或对象，或在顶部选择一份具体文档。"
 
 @step_log("step_7_save_user_chat_message")
 def step_7_save_user_chat_message(state):
@@ -195,6 +269,11 @@ def step_7_save_user_chat_message(state):
         text=state["original_query"],
         rewritten_query=state["rewritten_query"],
         item_names=state["item_names"],
+        kb_ids=state.get("kb_ids", []),
+        document_ids=state.get("document_ids", []),
+        query_mode=state.get("query_mode", ""),
+        query_depth=state.get("query_depth", ""),
+        query_aspects=state.get("query_aspects", []),
     )
 
 @node_log("node_item_name_confirm")
@@ -219,12 +298,14 @@ def node_item_name_confirm(state):
         return state
 
     query_result = step_3_llm_itemnames_and_rewrite(history, original_query)
+    if not state.get("document_ids"):
+        state["document_ids"] = _recent_document_ids(history, original_query)
     lookup_terms = query_result["item_names"] or [query_result["rewritten_query"]]
     vector_dict = step_4_vector_query_item_name(lookup_terms, state.get("kb_ids", []))
     final_result = step_5_select_item_list(vector_dict)
 
     state["history"] = history
-    step_6_deal_state(state, final_result, query_result["rewritten_query"])
+    step_6_deal_state(state, final_result, query_result)
     step_7_save_user_chat_message(state)
 
     add_done_task(run_id, node_name, is_stream)

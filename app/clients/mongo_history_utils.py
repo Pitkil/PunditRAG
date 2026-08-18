@@ -47,6 +47,11 @@ def save_chat_message(
     item_names:Optional[List[str]] = None,
     image_urls:Optional[List[str]] = None,
     sources:Optional[List[Dict[str, Any]]] = None,
+    kb_ids:Optional[List[str]] = None,
+    document_ids:Optional[List[str]] = None,
+    query_mode:str = "",
+    query_depth:str = "",
+    query_aspects:Optional[List[str]] = None,
     message_id:Optional[str] = None,
 )->str:
     ts = datetime.now().timestamp()
@@ -59,6 +64,11 @@ def save_chat_message(
         "item_names": item_names,
         "image_urls": image_urls,
         "sources": sources or [],
+        "kb_ids": kb_ids or [],
+        "document_ids": document_ids or [],
+        "query_mode": query_mode,
+        "query_depth": query_depth,
+        "query_aspects": query_aspects or [],
         "ts": ts,
     }
 

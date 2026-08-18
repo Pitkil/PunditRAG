@@ -10,17 +10,27 @@ from app.core.logger import logger, node_log, step_log
 from app.llm.llm_util import get_llm_client
 from app.query_process.agent.source_utils import (
     build_source_records,
+    compact_citations,
     reject_invalid_citations,
-    select_cited_sources,
 )
 from app.utils.task_utils import add_done_task, add_running_task
 
 
 SUMMARY_BATCH_CHARS = int(os.getenv("SUMMARY_BATCH_CHARS", "24000"))
 SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "2000"))
+DIRECT_DOCUMENT_MAX_CHARS = int(os.getenv("DIRECT_DOCUMENT_MAX_CHARS", "32000"))
 
 
 def is_document_summary_request(state) -> bool:
+    mode = state.get("query_mode")
+    if mode == "summarize":
+        return True
+    if (
+        mode == "explain"
+        and state.get("query_depth") == "deep"
+        and (state.get("document_ids") or state.get("item_names"))
+    ):
+        return True
     query = f"{state.get('original_query', '')} {state.get('rewritten_query', '')}"
     summary_words = ("概括", "总结", "梳理", "提炼", "提纲", "核心内容", "主要内容")
     whole_words = ("整份", "全文", "整本", "全书", "整个", "全部资料", "当前知识库", "这份资料", "该文档", "本文")
@@ -40,9 +50,13 @@ def step_1_load_summary_chunks(state) -> List[Dict]:
         return []
 
     filters = []
+    document_ids = state.get("document_ids") or []
     item_names = state.get("item_names") or []
-    filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
-    if item_names:
+    if document_ids:
+        filters.append(f"document_id in {json.dumps(document_ids, ensure_ascii=False)}")
+    else:
+        filters.append(f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}")
+    if item_names and not document_ids:
         filters.append(f"item_name in {json.dumps(item_names, ensure_ascii=False)}")
     rows = client.query(
         collection_name=collection,
@@ -91,6 +105,18 @@ def _invoke_text(prompt: str) -> str:
     return str(response.content).strip()
 
 
+@step_log("step_2_direct_synthesis")
+def step_2_direct_synthesis(question: str, sources: List[Dict]) -> str:
+    context = "\n\n".join(
+        f"<source id=\"{source['index']}\">\n"
+        f"标题：{source.get('file_title') or source.get('title')} / "
+        f"{source.get('parent_title') or source.get('title')}\n"
+        f"内容：\n{source.get('content', '')}\n</source>"
+        for source in sources
+    )
+    return _invoke_text(load_prompt("document_synthesis", question=question, context=context))
+
+
 @step_log("step_2_map_summary")
 def step_2_map_summary(question: str, sources: List[Dict]) -> List[str]:
     entries = [
@@ -128,15 +154,19 @@ def node_document_summary(state):
         state["sources"] = []
     else:
         question = state.get("rewritten_query") or state.get("original_query") or "概括资料"
-        mapped = step_2_map_summary(question, candidates)
-        state["answer"] = reject_invalid_citations(
-            step_3_reduce_summary(question, mapped),
-            candidates,
-        )
-        state["sources"] = select_cited_sources(state["answer"], candidates)
+        content_chars = sum(len(source.get("content") or "") for source in candidates)
+        if content_chars <= DIRECT_DOCUMENT_MAX_CHARS:
+            draft = step_2_direct_synthesis(question, candidates)
+            mapped_count = 1
+        else:
+            mapped = step_2_map_summary(question, candidates)
+            draft = step_3_reduce_summary(question, mapped)
+            mapped_count = len(mapped)
+        validated = reject_invalid_citations(draft, candidates)
+        state["answer"], state["sources"] = compact_citations(validated, candidates)
         logger.info(
-            f"整份资料摘要完成：读取{len(candidates)}个去重切片，"
-            f"生成{len(mapped)}个局部摘要，引用{len(state['sources'])}个来源"
+            f"文档综合完成：读取{len(candidates)}个去重切片，"
+            f"生成{mapped_count}个证据批次，引用{len(state['sources'])}个来源"
         )
 
     add_done_task(run_id, node_name, state.get("is_stream", False))

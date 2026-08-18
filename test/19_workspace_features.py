@@ -28,7 +28,7 @@ def test_knowledge_base_filter():
         ):
             getattr(module, function_name)([0.1], {1: 0.2}, ["学习资料"], ["kb-test"])
 
-        assert search_chunks.call_args.args[-2:] == (["学习资料"], ["kb-test"])
+        assert search_chunks.call_args.args[-3:] == (["学习资料"], ["kb-test"], [])
 
 
 def test_topic_search_is_an_expansion_not_a_hard_filter():

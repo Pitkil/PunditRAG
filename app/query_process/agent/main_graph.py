@@ -41,7 +41,7 @@ def router(state:QueryGraphState):
         #并发执行多路检索
         #1.向量数据库检索 2.HyDE(假设性文档嵌入)检索 3.mcp搜索
         routes = ["node_search_embedding", "node_search_embedding_hyde"]
-        if state.get("enable_web_search", True):
+        if state.get("enable_web_search", False):
             routes.append("node_web_search_mcp")
         return tuple(routes)
 

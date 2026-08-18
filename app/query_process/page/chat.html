@@ -65,6 +65,7 @@
     .select, .ghost-btn { min-height: 38px; padding: 8px 12px; color: var(--ink); background: rgba(255,255,255,.72); border: 1px solid var(--line); border-radius: 10px; }
     #sourceToggle { display: none; }
     .select { max-width: 190px; }
+    #docSelect { max-width: 230px; }
     .ghost-btn:hover { border-color: var(--brand); }
     .view { flex: 1; min-height: 0; display: none; }
     .view.active { display: flex; }
@@ -102,6 +103,15 @@
     .answer-text code { padding: 2px 5px; color: var(--brand-dark); background: #edf2ef; border-radius: 5px; font: .88em Consolas, monospace; }
     .answer-text pre { overflow-x: auto; margin: 14px 0; padding: 14px; color: #f4f2eb; background: #202724; border-radius: 11px; line-height: 1.6; white-space: pre; }
     .answer-text pre code { padding: 0; color: inherit; background: transparent; }
+    .answer-table-wrap { width: 100%; margin: 14px 0 17px; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .answer-text table { width: 100%; min-width: 520px; border-collapse: collapse; background: #fffefa; font-size: 14px; line-height: 1.55; }
+    .answer-text th, .answer-text td { padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .answer-text th:last-child, .answer-text td:last-child { border-right: 0; }
+    .answer-text tbody tr:last-child td { border-bottom: 0; }
+    .answer-text th { color: var(--ink); background: #f1f3ed; font-weight: 800; white-space: nowrap; }
+    .answer-text tbody tr:nth-child(even) { background: #f8f7f2; }
+    .answer-text .align-center { text-align: center; }
+    .answer-text .align-right { text-align: right; }
     .answer-text a { color: var(--brand); text-decoration-color: rgba(8,121,111,.35); text-underline-offset: 3px; }
     .answer-text hr { margin: 18px 0; border: 0; border-top: 1px solid var(--line); }
     .answer-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
@@ -265,7 +275,8 @@
         <div class="page-heading"><h1 id="pageTitle">知识问答</h1><p id="pageDesc">融合私有资料与联网信息，给出可追溯答案。</p></div>
         <div class="top-actions" id="chatActions">
           <select class="select" id="kbSelect" title="选择知识库"></select>
-          <label class="ghost-btn"><input type="checkbox" id="webSearch" checked> 联网</label>
+          <select class="select" id="docSelect" title="选择文档范围"></select>
+          <label class="ghost-btn"><input type="checkbox" id="webSearch"> 联网补充</label>
           <button class="ghost-btn" id="sourceToggle">引用来源</button>
         </div>
       </header>
@@ -304,7 +315,7 @@
       <section class="view management" id="importView">
         <div class="management-inner">
           <div class="hero-row"><div><h2>导入资料</h2><p>支持 PDF、Markdown、Word、PowerPoint、Excel、TXT、CSV、HTML 与 JSON，导入后自动解析、切分并向量化。</p></div><select class="select" id="uploadKbSelect"></select></div>
-          <label class="upload-zone" id="dropZone" for="fileInput"><div><div class="upload-symbol">↑</div><h3>把文档放到这里</h3><p>拖拽文件，或点击选择 PDF、Office、文本与网页文件</p><button type="button" class="primary-btn">选择文件</button></div></label>
+          <div class="upload-zone" id="dropZone"><div><div class="upload-symbol">↑</div><h3>把文档放到这里</h3><p>拖拽文件，或点击选择 PDF、Office、文本与网页文件</p><button type="button" class="primary-btn" id="chooseFilesBtn">选择文件</button></div></div>
           <input id="fileInput" type="file" multiple accept=".pdf,.md,.txt,.docx,.pptx,.xlsx,.csv,.html,.htm,.json" hidden>
           <div class="upload-queue" id="uploadQueue"></div>
         </div>
@@ -338,7 +349,12 @@
     const IMPORT_API = `${location.protocol}//${location.hostname}:8000`;
     const $ = (selector) => document.querySelector(selector);
     const $$ = (selector) => [...document.querySelectorAll(selector)];
-    const state = { sessions: [], knowledgeBases: [], currentSession: localStorage.getItem("pundit_session") || "", selectedKb: "", sources: [], busy: false, activeQuery: null, confirmResolve: null };
+    const state = {
+      sessions: [], knowledgeBases: [], documents: [], currentSession: localStorage.getItem("pundit_session") || "",
+      selectedKb: localStorage.getItem("pundit_kb_scope") || "",
+      selectedDocument: localStorage.getItem("pundit_document_scope") || "",
+      sources: [], busy: false, activeQuery: null, confirmResolve: null
+    };
     const viewMeta = {
       chat: ["知识问答", "融合私有资料与联网信息，给出可追溯答案。"],
       knowledge: ["知识库管理", "组织文档、查看处理状态与维护资料范围。"],
@@ -366,6 +382,27 @@
         : "");
       return html;
     }
+    function parseTableRow(line = "") {
+      const content = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+      const cells = []; let cell = "", escaped = false;
+      for (const char of content) {
+        if (escaped) { cell += char === "|" ? "|" : `\\${char}`; escaped = false; continue; }
+        if (char === "\\") { escaped = true; continue; }
+        if (char === "|") { cells.push(cell.trim()); cell = ""; continue; }
+        cell += char;
+      }
+      if (escaped) cell += "\\";
+      cells.push(cell.trim());
+      return cells;
+    }
+    function tableAlignments(line = "") {
+      const cells = parseTableRow(line);
+      if (!cells.length || cells.some(cell => !/^:?-{3,}:?$/.test(cell.replace(/\s/g, "")))) return null;
+      return cells.map(cell => {
+        const marker = cell.replace(/\s/g, "");
+        return marker.startsWith(":") && marker.endsWith(":") ? "align-center" : marker.endsWith(":") ? "align-right" : "";
+      });
+    }
     function renderMarkdown(value = "", sources = []) {
       const validCitationIndexes = new Set(sources.map(source => Number(source.index)).filter(Number.isFinite));
       const lines = stripLegacyImageBlock(value).replace(/\r\n?/g, "\n").split("\n");
@@ -373,10 +410,30 @@
       const inline = value => renderInline(value, validCitationIndexes);
       const flushParagraph = () => { if (paragraph.length) { output.push(`<p>${paragraph.map(inline).join("<br>")}</p>`); paragraph = []; } };
       const closeList = () => { if (listType) { output.push(`</${listType}>`); listType = ""; } };
-      for (const line of lines) {
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex];
         if (/^\s*```/.test(line)) { flushParagraph(); closeList(); if (inCode) { output.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`); code = []; } inCode = !inCode; continue; }
         if (inCode) { code.push(line); continue; }
         if (!line.trim()) { flushParagraph(); closeList(); continue; }
+        const alignments = line.includes("|") && lineIndex + 1 < lines.length ? tableAlignments(lines[lineIndex + 1]) : null;
+        if (alignments) {
+          const headers = parseTableRow(line);
+          if (headers.length === alignments.length) {
+            flushParagraph(); closeList();
+            const headerHtml = headers.map((cell, index) => `<th class="${alignments[index]}">${inline(cell)}</th>`).join("");
+            const rows = [];
+            lineIndex += 2;
+            while (lineIndex < lines.length && lines[lineIndex].trim() && lines[lineIndex].includes("|")) {
+              const cells = parseTableRow(lines[lineIndex]);
+              if (cells.length !== headers.length) break;
+              rows.push(`<tr>${cells.map((cell, index) => `<td class="${alignments[index]}">${inline(cell)}</td>`).join("")}</tr>`);
+              lineIndex += 1;
+            }
+            lineIndex -= 1;
+            output.push(`<div class="answer-table-wrap"><table><thead><tr>${headerHtml}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`);
+            continue;
+          }
+        }
         const heading = line.match(/^\s*(#{1,4})\s+(.+)$/);
         if (heading) { flushParagraph(); closeList(); const level = heading[1].length; output.push(`<h${level}>${inline(heading[2])}</h${level}>`); continue; }
         if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flushParagraph(); closeList(); output.push("<hr>"); continue; }
@@ -417,14 +474,41 @@
     $$(".nav-btn").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
 
     async function loadKnowledgeBases() {
-      const data = await request(`${IMPORT_API}/knowledge-bases`);
-      state.knowledgeBases = data.items || [];
+      const [kbData, documentData] = await Promise.all([
+        request(`${IMPORT_API}/knowledge-bases`),
+        request(`${IMPORT_API}/documents`)
+      ]);
+      state.knowledgeBases = kbData.items || [];
+      state.documents = documentData.items || [];
       if (state.selectedKb && !state.knowledgeBases.some(kb => kb.kb_id === state.selectedKb)) state.selectedKb = "";
+      if (state.selectedDocument && !state.documents.some(doc => doc.document_id === state.selectedDocument)) state.selectedDocument = "";
       const options = [`<option value="">全部知识库</option>`, ...state.knowledgeBases.map(kb => `<option value="${kb.kb_id}">${escapeHtml(kb.name)}</option>`)].join("");
       $("#kbSelect").innerHTML = options;
       $("#uploadKbSelect").innerHTML = state.knowledgeBases.length ? state.knowledgeBases.map(kb => `<option value="${kb.kb_id}">${escapeHtml(kb.name)}</option>`).join("") : `<option value="">请先创建知识库</option>`;
       $("#kbSelect").value = state.selectedKb;
+      updateScopeControls();
       renderKnowledgeBases();
+    }
+    function updateScopeControls() {
+      const visibleDocuments = state.selectedKb ? state.documents.filter(doc => doc.kb_id === state.selectedKb) : state.documents;
+      if (state.selectedDocument && !visibleDocuments.some(doc => doc.document_id === state.selectedDocument)) state.selectedDocument = "";
+      const kbNames = new Map(state.knowledgeBases.map(kb => [kb.kb_id, kb.name]));
+      $("#docSelect").innerHTML = [`<option value="">全部文档</option>`, ...visibleDocuments.map(doc => {
+        const suffix = state.selectedKb ? "" : ` · ${kbNames.get(doc.kb_id) || "知识库"}`;
+        return `<option value="${doc.document_id}">${escapeHtml(doc.filename || doc.file_title || "未命名文档")}${escapeHtml(suffix)}</option>`;
+      })].join("");
+      $("#docSelect").value = state.selectedDocument;
+      $("#docSelect").disabled = !visibleDocuments.length;
+      localStorage.setItem("pundit_kb_scope", state.selectedKb);
+      localStorage.setItem("pundit_document_scope", state.selectedDocument);
+      const document = state.documents.find(doc => doc.document_id === state.selectedDocument);
+      const kb = state.knowledgeBases.find(item => item.kb_id === state.selectedKb);
+      $("#scopeLabel").textContent = `检索范围：${document ? `文档 · ${document.filename || document.file_title}` : kb ? kb.name : "全部知识库"}`;
+    }
+    function currentQueryScope() {
+      if (state.selectedDocument) return {scope_mode:"documents", kb_ids:[], document_ids:[state.selectedDocument]};
+      if (state.selectedKb) return {scope_mode:"knowledge_base", kb_ids:[state.selectedKb], document_ids:[]};
+      return {scope_mode:"all", kb_ids:[], document_ids:[]};
     }
     function renderKnowledgeBases() {
       $("#kbGrid").innerHTML = state.knowledgeBases.length ? state.knowledgeBases.map(kb => `<article class="kb-card" data-kb="${kb.kb_id}"><div class="kb-glyph">K</div><div class="card-actions"><button class="icon-btn delete-kb" data-id="${kb.kb_id}" title="删除">×</button></div><h3>${escapeHtml(kb.name)}</h3><p>${escapeHtml(kb.description || "暂无说明")}</p><div class="kb-meta"><span>${kb.document_count || 0} 份文档</span><span>私有知识库</span></div></article>`).join("") : `<div class="empty knowledge-empty">还没有知识库。请先新建知识库，再导入文档。</div>`;
@@ -433,6 +517,8 @@
     }
     async function selectKnowledgeBase(kbId) {
       state.selectedKb = kbId; $("#kbSelect").value = kbId; $("#uploadKbSelect").value = kbId;
+      if (state.selectedDocument && !state.documents.some(doc => doc.document_id === state.selectedDocument && doc.kb_id === kbId)) state.selectedDocument = "";
+      updateScopeControls();
       $("#documentPanel").dataset.loaded = "true";
       const kb = state.knowledgeBases.find(item => item.kb_id === kbId);
       $("#documentTitle").textContent = kb ? `${kb.name} · 文档` : "文档";
@@ -518,7 +604,7 @@
       const assistant = addMessage("assistant", "", "正在理解问题…"); const answerEl = assistant.querySelector(".answer-text"), progressEl = assistant.querySelector(".progress");
       state.activeQuery = {conversationId: querySessionId, runId: "", answer: "", imageUrls: [], trace: [], error: "", answerEl, progressEl};
       try {
-        const start = await request(`${QUERY_API}/query`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({query, session_id:querySessionId, kb_ids:state.selectedKb ? [state.selectedKb] : [], is_stream:true, enable_web_search:$("#webSearch").checked})});
+        const start = await request(`${QUERY_API}/query`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({query, session_id:querySessionId, ...currentQueryScope(), is_stream:true, enable_web_search:$("#webSearch").checked})});
         state.activeQuery.runId = start.run_id;
         await consumeStream(start.run_id);
         await loadSessionsSilently(query);
@@ -539,7 +625,7 @@
       form.append("kb_id", kbId);
       try {
         const data = await request(`${IMPORT_API}/upload`, {method:"POST", body:form});
-        pollImport(data.task_ids[0], item, kbId);
+        pollImport(data.task_ids[0], item, kbId, data.document_ids?.[0] || "");
       } catch (error) {
         setUploadState(item, {status:"failed", progress:3, error:error.message});
       }
@@ -573,13 +659,17 @@
       item.querySelector(".upload-percent").textContent = `${status === "completed" ? 100 : progress}%`;
     }
 
-    function pollImport(taskId, item, kbId) {
+    function pollImport(taskId, item, kbId, documentId) {
       const update = async () => {
         try {
           const data = await request(`${IMPORT_API}/status/${taskId}`);
           setUploadState(item, data);
           if (["completed", "failed"].includes(data.status)) {
             clearInterval(timer);
+            if (data.status === "completed" && documentId) {
+              state.selectedKb = kbId;
+              state.selectedDocument = documentId;
+            }
             await loadKnowledgeBases();
             if (state.selectedKb === kbId) await selectKnowledgeBase(kbId);
           }
@@ -596,7 +686,8 @@
     function bindSuggestions() { $$(".suggestion").forEach(btn => btn.addEventListener("click", () => { $("#queryInput").value = btn.textContent; $("#queryInput").focus(); })); }
 
     $("#newChatBtn").addEventListener("click", createSession);
-    $("#kbSelect").addEventListener("change", event => { state.selectedKb = event.target.value; const kb = state.knowledgeBases.find(item => item.kb_id === state.selectedKb); $("#scopeLabel").textContent = `检索范围：${kb ? kb.name : "全部知识库"}`; });
+    $("#kbSelect").addEventListener("change", event => { state.selectedKb = event.target.value; state.selectedDocument = ""; updateScopeControls(); });
+    $("#docSelect").addEventListener("change", event => { state.selectedDocument = event.target.value; updateScopeControls(); });
     $("#sendBtn").addEventListener("click", sendQuery);
     $("#queryInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendQuery(); } });
     $("#sourceToggle").addEventListener("click", () => $("#sourcePanel").classList.toggle("open"));
@@ -610,7 +701,14 @@
     $("#saveKbBtn").addEventListener("click", async () => { const name = $("#kbName").value.trim(); if (!name) return toast("请输入知识库名称"); const created = await request(`${IMPORT_API}/knowledge-bases`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({name, description:$("#kbDescription").value.trim()})}); $("#kbModal").classList.remove("open"); $("#kbName").value = ""; $("#kbDescription").value = ""; await loadKnowledgeBases(); await selectKnowledgeBase(created.kb_id); toast("知识库已创建"); });
     $("#panelUploadBtn").addEventListener("click", () => { if (!state.knowledgeBases.length) return toast("请先新建知识库"); if (state.selectedKb) $("#uploadKbSelect").value = state.selectedKb; switchView("import"); });
     $("#refreshSettings").addEventListener("click", loadSettings);
-    const dropZone = $("#dropZone"); ["dragenter","dragover"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.add("drag"); })); ["dragleave","drop"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.remove("drag"); })); dropZone.addEventListener("drop", event => uploadFiles(event.dataTransfer.files)); $("#fileInput").addEventListener("change", event => { uploadFiles(event.target.files); event.target.value = ""; });
+    const dropZone = $("#dropZone"), fileInput = $("#fileInput"), chooseFilesBtn = $("#chooseFilesBtn");
+    function openFilePicker() { if (typeof fileInput.showPicker === "function") { try { fileInput.showPicker(); return; } catch (_) {} } fileInput.click(); }
+    chooseFilesBtn.addEventListener("click", event => { event.stopPropagation(); openFilePicker(); });
+    dropZone.addEventListener("click", event => { if (!event.target.closest("#chooseFilesBtn")) openFilePicker(); });
+    ["dragenter","dragover"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.add("drag"); }));
+    ["dragleave","drop"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.remove("drag"); }));
+    dropZone.addEventListener("drop", event => uploadFiles(event.dataTransfer.files));
+    fileInput.addEventListener("change", event => { uploadFiles(event.target.files); event.target.value = ""; });
 
     async function init() { try { await Promise.all([loadKnowledgeBases(), loadSessions()]); bindSuggestions(); } catch (error) { toast(`初始化失败：${error.message}`); } }
     init();

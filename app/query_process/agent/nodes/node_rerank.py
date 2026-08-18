@@ -9,6 +9,7 @@ from app.conf.reranker_config import reranker_config
 from app.conf.retrieval_config import retrieval_config
 from app.utils.task_utils import add_running_task
 from app.core.logger import logger, step_log
+from app.query_process.agent.source_utils import deduplicate_documents
 load_dotenv()
 
 RERANK_MAX_TOPK = retrieval_config.rerank_max_top_k
@@ -113,7 +114,7 @@ def step_3_rerank_score_and_sort(state, final_chunk_list):
     # 返回数据
     return final_chunk_list
 
-def step_4_chunk_topk(chunk_list_score_sorted):
+def step_4_chunk_topk(chunk_list_score_sorted, minimum_topk=None):
     """
     断崖式截断
     """
@@ -124,7 +125,7 @@ def step_4_chunk_topk(chunk_list_score_sorted):
     if not relevant_chunks:
         return []
     chunk_list_score_sorted = relevant_chunks
-    min_topk = RERANK_MIN_TOPK
+    min_topk = max(RERANK_MIN_TOPK, int(minimum_topk or RERANK_MIN_TOPK))
     max_topk = RERANK_MAX_TOPK
     gap_ratio = RERANK_GAP_RATIO
     max_gap = RERANK_GAP_ABS
@@ -145,6 +146,20 @@ def step_4_chunk_topk(chunk_list_score_sorted):
                  break
     final_chunk_list = chunk_list_score_sorted[:topk]
     return final_chunk_list
+
+
+def step_4_promote_section_diversity(chunks):
+    """深度讲解优先覆盖不同文档章节，再补回同章节的其他高分切片。"""
+    diverse, repeated, seen = [], [], set()
+    for chunk in chunks:
+        key = (
+            chunk.get("document_id") or chunk.get("url") or chunk.get("file_title"),
+            chunk.get("parent_title") or chunk.get("title"),
+        )
+        target = repeated if key in seen else diverse
+        target.append(chunk)
+        seen.add(key)
+    return diverse + repeated
 
 def step_5_low_confidence_fallback(chunk_list_score_sorted):
     """让回答模型核验少量低分候选，避免重排节点替最终模型提前拒答。"""
@@ -168,11 +183,14 @@ def node_rerank(state):
         add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
         return state
     final_chunk_list_score_sorted = step_3_rerank_score_and_sort(state,final_chunk_list)
+    final_chunk_list_score_sorted = deduplicate_documents(final_chunk_list_score_sorted)
+    needs_diversity = state.get("query_depth") == "deep" or state.get("query_mode") in {"explain", "compare"}
     if any(chunk.get("score") is None for chunk in final_chunk_list_score_sorted):
         final_chunk_list_score_sorted_topk = final_chunk_list_score_sorted[:RERANK_MAX_TOPK]
         state["evidence_quality"] = "unscored"
     else:
-        final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted)
+        minimum_topk = 4 if state.get("query_depth") == "deep" or state.get("query_mode") == "compare" else None
+        final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted, minimum_topk)
         if final_chunk_list_score_sorted_topk:
             state["evidence_quality"] = "qualified"
         else:
@@ -180,6 +198,10 @@ def node_rerank(state):
                 final_chunk_list_score_sorted
             )
             state["evidence_quality"] = "low"
+    if needs_diversity:
+        final_chunk_list_score_sorted_topk = step_4_promote_section_diversity(
+            final_chunk_list_score_sorted_topk
+        )
     state["reranked_docs"] = final_chunk_list_score_sorted_topk
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return state

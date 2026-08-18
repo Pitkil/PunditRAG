@@ -189,8 +189,8 @@ def test_step_5_build_sources_keeps_current_citations():
     with patch.object(answer_module, "set_task_result"):
         answer_module.step_5_build_sources(state, state["reranked_docs"])
 
-    assert state["answer"] == "测量时不要触碰表笔金属部分。[2]"
-    assert [source["index"] for source in state["sources"]] == [2]
+    assert state["answer"] == "测量时不要触碰表笔金属部分。[1]"
+    assert [source["index"] for source in state["sources"]] == [1]
 
 
 def test_node_answer_output_non_stream():

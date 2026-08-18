@@ -342,6 +342,11 @@ def get_knowledge_documents(kb_id: str):
     return {"items": list_documents(kb_id)}
 
 
+@app.get("/documents")
+def get_all_knowledge_documents():
+    return {"items": list_documents()}
+
+
 @app.delete("/documents/{document_id}")
 def remove_document(document_id: str):
     document = get_document(document_id)

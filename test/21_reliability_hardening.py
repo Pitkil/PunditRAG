@@ -16,6 +16,7 @@ if str(PROJECT_ROOT / "eval") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "eval"))
 
 from app.import_process.agent.api import server as import_server
+from app.import_process.agent.nodes import node_item_name_recognition as item_recognition_module
 from app.import_process.agent.nodes.node_document_split import split_dense_spec_lines
 from app.core.load_prompt import load_prompt
 from app.query_process.agent.nodes import node_item_name_confirm as item_name_module
@@ -117,6 +118,45 @@ def test_embedding_calls_are_serialized_for_shared_fp16_model():
     assert all(result["sparse"][0] == {1: 0.5} for result in results)
 
 
+def test_item_name_vectors_match_float16_collection_schema():
+    insert_client = MagicMock()
+    insert_client.has_collection.return_value = True
+    with (
+        patch.object(item_recognition_module, "get_milvus_client", return_value=insert_client),
+        patch.object(item_recognition_module, "ensure_document_active"),
+    ):
+        item_recognition_module.step_4(
+            "示例主题",
+            "示例文档",
+            [0.1, 0.2],
+            {1: 0.5},
+            "kb-1",
+            "doc-1",
+        )
+
+    inserted_vector = insert_client.insert.call_args.kwargs["data"][0]["dense_vector"]
+    assert isinstance(inserted_vector, np.ndarray)
+    assert inserted_vector.dtype == np.float16
+
+    search_client = MagicMock()
+    search_client.has_collection.return_value = True
+    with (
+        patch.object(item_name_module, "get_milvus_client", return_value=search_client),
+        patch.object(
+            item_name_module,
+            "generate_embeddings",
+            return_value={"dense": [[0.1, 0.2]], "sparse": [{1: 0.5}]},
+        ),
+        patch.object(item_name_module, "create_hybrid_search_requests", return_value=[]) as requests,
+        patch.object(item_name_module, "hybrid_search", return_value=[[]]),
+    ):
+        item_name_module.step_4_vector_query_item_name(["示例主题"], ["kb-1"])
+
+    queried_vector = requests.call_args.args[0]
+    assert isinstance(queried_vector, np.ndarray)
+    assert queried_vector.dtype == np.float16
+
+
 def test_subjective_preference_queries_are_rewritten_as_evidence_requests():
     prompt = load_prompt(
         "rewritten_query_and_itemnames",
@@ -150,6 +190,11 @@ def test_all_prompt_contracts_render_and_keep_critical_rules():
             question="问题A",
         ),
         "compress": load_prompt("compress", max_chars=200, text="待压缩正文"),
+        "document_synthesis": load_prompt(
+            "document_synthesis",
+            question="详细讲解资料",
+            context='<source id="1">正文</source>',
+        ),
         "hyde_prompt": load_prompt("hyde_prompt", rewritten_query="检索问题"),
         "image_summary": load_prompt(
             "image_summary",
@@ -175,13 +220,14 @@ def test_all_prompt_contracts_render_and_keep_critical_rules():
         ),
     }
 
-    assert len(rendered) == 9
+    assert len(rendered) == 10
     assert all(isinstance(prompt, str) and prompt.strip() for prompt in rendered.values())
     assert "候选资料正文" in rendered["answer_out"]
     assert "当前资料中没有足够信息" in rendered["answer_out"]
     assert "每个来自资料的事实性结论" in rendered["answer_out"]
     assert "不可信数据" in rendered["answer_out"]
     assert "字段与取值及单位的对应关系" in rendered["compress"]
+    assert "不得把“分配到不同组”扩写成“随机分组”" in rendered["document_synthesis"]
     assert "不是回答问题" in rendered["hyde_prompt"]
     assert "图片内容无法清晰识别" in rendered["image_summary"]
     assert "只输出一行名称" in rendered["item_name_recognition"]
@@ -199,6 +245,7 @@ if __name__ == "__main__":
         test_upload_filename_is_normalized_and_blocks_empty_names,
         test_dense_spec_lines_are_grouped_with_heading_and_overlap,
         test_embedding_calls_are_serialized_for_shared_fp16_model,
+        test_item_name_vectors_match_float16_collection_schema,
         test_subjective_preference_queries_are_rewritten_as_evidence_requests,
         test_all_prompt_contracts_render_and_keep_critical_rules,
     ]

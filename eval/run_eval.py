@@ -21,7 +21,7 @@ QUERY_API = "http://127.0.0.1:8001"
 
 REFUSAL_KEYWORDS = (
     "无法", "没有找到", "未找到", "没有相关资料", "没有相关信息",
-    "无法回答", "不能回答", "无法确认", "暂未", "不能确定", "无法确定",
+    "没有足够信息", "无法回答", "不能回答", "无法确认", "暂未", "不能确定", "无法确定",
 )
 
 
@@ -145,7 +145,9 @@ def main():
                 {
                     "query": case["query"],
                     "session_id": f"selfbuilt-{eval_run_id}-{qid}",
+                    "scope_mode": "knowledge_base",
                     "kb_ids": [kb_id],
+                    "document_ids": [],
                     "is_stream": False,
                     "enable_web_search": False,
                 },

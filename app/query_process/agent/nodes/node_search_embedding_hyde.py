@@ -48,7 +48,7 @@ def step_3_rewritten_hyde_vector(rewritten_query, hyde_answer):
     return result['dense'][0],result['sparse'][0]
 
 @step_log("step_4_mivlus_hybrid_search")
-def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names, kb_ids=None):
+def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names, kb_ids=None, document_ids=None):
     """
      混合搜索步骤:
         1. 创建对应AnnSearchRequest
@@ -59,7 +59,7 @@ def step_4_mivlus_hybrid_search(dense_vector, sparse_vector, item_names, kb_ids=
     if not milvus_client:
         raise ValueError("无法连接到 Milvus 数据库")
     return search_chunks(
-        milvus_client, dense_vector, sparse_vector, item_names, kb_ids or []
+        milvus_client, dense_vector, sparse_vector, item_names, kb_ids or [], document_ids or []
     )
 
 @node_log(node_name="node_search_embedding_hyde")
@@ -71,8 +71,8 @@ def node_search_embedding_hyde(state):
     run_id = state.get("run_id") or state["session_id"]
     add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     item_names, rewritten_query = step_1_data_validates(state)
-    if not state.get("kb_ids"):
-        logger.info("未选择知识库，跳过 HyDE 向量检索")
+    if not state.get("kb_ids") and not state.get("document_ids"):
+        logger.info("未选择资料范围，跳过 HyDE 向量检索")
         add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
         return {"hyde_embedding_chunks": []}
     hyde_answer = step_2_call_llm(rewritten_query)
@@ -85,7 +85,7 @@ def node_search_embedding_hyde(state):
         add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
         return {"hyde_embedding_chunks": []}
     milvus_result = step_4_mivlus_hybrid_search(
-        dense_vector, sparse_vector, item_names, state.get("kb_ids", [])
+        dense_vector, sparse_vector, item_names, state.get("kb_ids", []), state.get("document_ids", [])
     )
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return {"hyde_embedding_chunks": milvus_result}

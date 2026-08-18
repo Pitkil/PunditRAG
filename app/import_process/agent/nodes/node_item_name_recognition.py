@@ -133,10 +133,8 @@ def step_4(item_name, file_title, dense_vector, sparse_vector, kb_id="", documen
     )
     milvus_client.delete(milvus_config.item_name_collection, filter=delete_filter)
     #存储数据
-    # Milvus FLOAT_VECTOR fields and query paths use float32. Keeping this
-    # boundary explicit avoids GPU/driver-specific Half values leaking into
-    # storage or later search calls.
-    normalized_dense_vector = np.asarray(dense_vector, dtype=np.float32)
+    # kb_item_names 使用 FLOAT16_VECTOR，PyMilvus 要求传入匹配 dtype 的 ndarray。
+    normalized_dense_vector = np.asarray(dense_vector, dtype=np.float16)
 
     data = [
             {

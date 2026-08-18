@@ -9,9 +9,9 @@ from app.llm.llm_util import get_llm_client
 from app.clients.mongo_history_utils import save_chat_message
 from app.query_process.agent.source_utils import (
     build_source_records,
+    compact_citations,
     deduplicate_documents,
     reject_invalid_citations,
-    select_cited_sources,
 )
 import re
 
@@ -179,8 +179,7 @@ def step_5_build_sources(state, reranked_docs):
     validated_answer = reject_invalid_citations(original_answer, candidates)
     if validated_answer != original_answer:
         logger.warning("答案引用了本轮不存在的来源编号，已拒绝该答案")
-    state["answer"] = validated_answer
-    state["sources"] = select_cited_sources(validated_answer, candidates)
+    state["answer"], state["sources"] = compact_citations(validated_answer, candidates)
     set_task_result(
         state.get("run_id") or state.get("session_id"),
         "answer",
@@ -200,6 +199,11 @@ def step_6_save_chat_history(state):
         item_names=state.get("item_names",[]),
         image_urls = state.get("image_urls",[]),
         sources=state.get("sources", []),
+        kb_ids=state.get("kb_ids", []),
+        document_ids=state.get("document_ids", []),
+        query_mode=state.get("query_mode", ""),
+        query_depth=state.get("query_depth", ""),
+        query_aspects=state.get("query_aspects", []),
     )
 
 @node_log("node_answer_output")

@@ -160,7 +160,7 @@ def step_4(image_context_list, image_summaries_dict, md_content, object_scope) -
      #替换成 MinIO 网络 URL 后，文档就可以在任意地方渲染预览了。
      for image_name,(image_url,image_summary) in total_image_info.items():
         # 找到 md_content   ![summary](image_url) -> ![](/xxx/xxx.jpg)
-        rep = re.compile(r"\!\[.*?\]\(.*?" + re.escape(image_name) + ".*?\)")
+        rep = re.compile(r"\!\[.*?\]\(.*?" + re.escape(image_name) + r".*?\)")
         #lambda：防止反斜杠或数字（比如 \1、\g）被当作正则    （替换后的格式和内容，被替换的内容）
         md_content =  rep.sub(lambda _:f"![{image_summary}]({image_url})",md_content)
 

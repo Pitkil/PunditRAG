@@ -2,6 +2,7 @@ import os
 import uuid
 from mimetypes import guess_type
 from threading import Lock
+from typing import Literal
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -13,6 +14,7 @@ from app.clients.mongo_history_utils import get_recent_messages
 from app.clients.mongo_workspace_utils import (
     delete_chat_session,
     ensure_chat_session,
+    get_document,
     list_chat_sessions,
     rename_chat_session,
     list_knowledge_bases,
@@ -109,16 +111,51 @@ def health():
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="查询内容")
     session_id: str | None = Field(None, description="会话 ID")
+    scope_mode: Literal["all", "knowledge_base", "documents"] = Field(
+        "knowledge_base", description="资料范围模式"
+    )
     kb_ids: list[str] = Field(default_factory=list, description="知识库 ID 列表")
+    document_ids: list[str] = Field(default_factory=list, description="文档 ID 列表")
     is_stream: bool = Field(False, description="是否流式返回")
-    enable_web_search: bool = Field(True, description="是否启用联网搜索")
+    enable_web_search: bool = Field(False, description="是否启用联网补充")
+
+
+def resolve_query_scope(req: QueryRequest) -> tuple[list[str], list[str]]:
+    """把用户选择解析成明确范围，空数组不再同时表示“全部”和“无范围”。"""
+    knowledge_bases = list_knowledge_bases()
+    known_kb_ids = {item["kb_id"] for item in knowledge_bases}
+
+    if req.scope_mode == "all":
+        return sorted(known_kb_ids), []
+
+    if req.scope_mode == "documents":
+        if not req.document_ids:
+            raise HTTPException(status_code=400, detail="文档范围不能为空")
+        documents = [get_document(document_id) for document_id in dict.fromkeys(req.document_ids)]
+        unknown_document_ids = [
+            document_id
+            for document_id, document in zip(dict.fromkeys(req.document_ids), documents)
+            if not document or document.get("status") in {"deleting", "deleted"}
+        ]
+        if unknown_document_ids:
+            raise HTTPException(status_code=404, detail={"unknown_document_ids": unknown_document_ids})
+        document_ids = [document["document_id"] for document in documents]
+        kb_ids = sorted({document["kb_id"] for document in documents})
+        return kb_ids, document_ids
+
+    unknown_kb_ids = sorted(set(req.kb_ids) - known_kb_ids)
+    if unknown_kb_ids:
+        raise HTTPException(status_code=404, detail={"unknown_kb_ids": unknown_kb_ids})
+    return list(dict.fromkeys(req.kb_ids)), []
 
 
 def run_query_graph(
     session_id: str,
     run_id: str,
     query: str,
+    scope_mode: str,
     kb_ids: list[str],
+    document_ids: list[str],
     is_stream: bool,
     enable_web_search: bool,
 ):
@@ -130,7 +167,9 @@ def run_query_graph(
             session_id=session_id,
             run_id=run_id,
             original_query=query,
+            scope_mode=scope_mode,
             kb_ids=kb_ids,
+            document_ids=document_ids,
             is_stream=is_stream,
             enable_web_search=enable_web_search,
         )
@@ -161,11 +200,7 @@ def run_query_graph(
 
 @app.post("/query")
 async def query(req: QueryRequest, background_tasks: BackgroundTasks):
-    if req.kb_ids:
-        known_kb_ids = {item["kb_id"] for item in list_knowledge_bases()}
-        unknown_kb_ids = sorted(set(req.kb_ids) - known_kb_ids)
-        if unknown_kb_ids:
-            raise HTTPException(status_code=404, detail={"unknown_kb_ids": unknown_kb_ids})
+    resolved_kb_ids, resolved_document_ids = resolve_query_scope(req)
     session_id = req.session_id or str(uuid.uuid4())
     run_id = str(uuid.uuid4())
     _register_run(session_id, run_id)
@@ -176,7 +211,9 @@ async def query(req: QueryRequest, background_tasks: BackgroundTasks):
             session_id,
             run_id,
             req.query,
-            req.kb_ids,
+            req.scope_mode,
+            resolved_kb_ids,
+            resolved_document_ids,
             True,
             req.enable_web_search,
         )
@@ -186,7 +223,9 @@ async def query(req: QueryRequest, background_tasks: BackgroundTasks):
         session_id,
         run_id,
         req.query,
-        req.kb_ids,
+        req.scope_mode,
+        resolved_kb_ids,
+        resolved_document_ids,
         False,
         req.enable_web_search,
     )
@@ -243,6 +282,11 @@ def get_history(session_id: str, limit: int = 50):
                 "item_names": item.get("item_names", []),
                 "image_urls": item.get("image_urls", []),
                 "sources": item.get("sources", []),
+                "kb_ids": item.get("kb_ids", []),
+                "document_ids": item.get("document_ids", []),
+                "query_mode": item.get("query_mode", ""),
+                "query_depth": item.get("query_depth", ""),
+                "query_aspects": item.get("query_aspects", []),
                 "ts": item.get("ts"),
             }
         )

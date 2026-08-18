@@ -33,18 +33,23 @@ def merge_unique_hits(*groups: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return merged
 
 
-def search_chunks(client, dense_vector, sparse_vector, item_names, kb_ids):
+def search_chunks(client, dense_vector, sparse_vector, item_names, kb_ids, document_ids=None):
     """Search an explicit KB scope and use topic matches only as recall expansion."""
-    if not kb_ids:
-        logger.info("本轮未指定知识库，跳过本地向量检索")
+    document_ids = document_ids or []
+    if not kb_ids and not document_ids:
+        logger.info("本轮未指定资料范围，跳过本地向量检索")
         return []
 
-    kb_filter = f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}"
+    scope_filter = (
+        f"document_id in {json.dumps(document_ids, ensure_ascii=False)}"
+        if document_ids
+        else f"kb_id in {json.dumps(kb_ids, ensure_ascii=False)}"
+    )
     broad_limit = retrieval_config.retrieval_top_k
     broad_requests = create_hybrid_search_requests(
         dense_vector,
         sparse_vector,
-        expr=kb_filter,
+        expr=scope_filter,
         limit=broad_limit,
     )
     broad_response = hybrid_search(
@@ -62,7 +67,7 @@ def search_chunks(client, dense_vector, sparse_vector, item_names, kb_ids):
 
     topic_limit = retrieval_config.topic_expansion_top_k
     topic_filter = (
-        f"{kb_filter} and item_name in {json.dumps(item_names, ensure_ascii=False)}"
+        f"{scope_filter} and item_name in {json.dumps(item_names, ensure_ascii=False)}"
     )
     topic_requests = create_hybrid_search_requests(
         dense_vector,
