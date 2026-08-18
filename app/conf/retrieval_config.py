@@ -15,22 +15,28 @@ class RetrievalConfig:
     retrieval_top_k: int
     topic_expansion_top_k: int
     rrf_top_k: int
+    rerank_input_top_k: int
     rerank_max_top_k: int
     rerank_min_top_k: int
     rerank_fallback_top_k: int
     rerank_min_score: float
     rerank_gap_abs: float
     rerank_gap_ratio: float
+    direct_document_max_chars: int
+    neighbor_expand_parts: int
 
 
 retrieval_config = RetrievalConfig(
     retrieval_top_k=_int_env("RETRIEVAL_TOP_K", 20),
     topic_expansion_top_k=_int_env("TOPIC_EXPANSION_TOP_K", 10),
     rrf_top_k=_int_env("RRF_TOP_K", 30),
+    rerank_input_top_k=_int_env("RERANK_INPUT_TOP_K", 30),
     rerank_max_top_k=_int_env("RERANK_MAX_TOP_K", 8),
     rerank_min_top_k=_int_env("RERANK_MIN_TOP_K", 2),
-    rerank_fallback_top_k=_int_env("RERANK_FALLBACK_TOP_K", 3),
+    rerank_fallback_top_k=_int_env("RERANK_FALLBACK_TOP_K", 8),
     rerank_min_score=_float_env("RERANK_MIN_SCORE", 0.09),
     rerank_gap_abs=_float_env("RERANK_GAP_ABS", 0.18),
     rerank_gap_ratio=_float_env("RERANK_GAP_RATIO", 0.35),
+    direct_document_max_chars=_int_env("DIRECT_DOCUMENT_MAX_CHARS", 64000, 1000),
+    neighbor_expand_parts=_int_env("NEIGHBOR_EXPAND_PARTS", 1, 0),
 )

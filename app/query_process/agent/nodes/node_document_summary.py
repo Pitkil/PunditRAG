@@ -1,10 +1,12 @@
 import json
 import os
 import sys
+import time
 from typing import Dict, Iterable, List
 
 from app.clients.milvus_utils import get_milvus_client
 from app.conf.milvus_config import milvus_config
+from app.conf.retrieval_config import retrieval_config
 from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
 from app.llm.llm_util import get_llm_client
@@ -14,27 +16,17 @@ from app.query_process.agent.source_utils import (
     reject_invalid_citations,
 )
 from app.utils.task_utils import add_done_task, add_running_task
+from app.utils.sse_utils import push_to_session, SSEEvent
 
 
 SUMMARY_BATCH_CHARS = int(os.getenv("SUMMARY_BATCH_CHARS", "24000"))
 SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "2000"))
-DIRECT_DOCUMENT_MAX_CHARS = int(os.getenv("DIRECT_DOCUMENT_MAX_CHARS", "32000"))
+DIRECT_DOCUMENT_MAX_CHARS = retrieval_config.direct_document_max_chars
 
 
 def is_document_summary_request(state) -> bool:
-    mode = state.get("query_mode")
-    if mode == "summarize":
-        return True
-    if (
-        mode == "explain"
-        and state.get("query_depth") == "deep"
-        and (state.get("document_ids") or state.get("item_names"))
-    ):
-        return True
-    query = f"{state.get('original_query', '')} {state.get('rewritten_query', '')}"
-    summary_words = ("概括", "总结", "梳理", "提炼", "提纲", "核心内容", "主要内容")
-    whole_words = ("整份", "全文", "整本", "全书", "整个", "全部资料", "当前知识库", "这份资料", "该文档", "本文")
-    return any(word in query for word in summary_words) and any(word in query for word in whole_words)
+    """只有明确的整份资料总结才进入全文综合链路。"""
+    return state.get("full_document") is True
 
 
 @step_log("step_1_load_summary_chunks")
@@ -62,7 +54,7 @@ def step_1_load_summary_chunks(state) -> List[Dict]:
         collection_name=collection,
         filter=" and ".join(filters),
         output_fields=[
-            "content", "title", "parent_title", "part", "file_title",
+            "chunk_id", "content", "title", "parent_title", "part", "chunk_index", "file_title",
             "item_name", "kb_id", "document_id",
         ],
         limit=SUMMARY_MAX_CHUNKS,
@@ -78,8 +70,7 @@ def step_1_load_summary_chunks(state) -> List[Dict]:
     ]
     documents.sort(key=lambda item: (
         str(item.get("file_title") or ""),
-        str(item.get("parent_title") or ""),
-        int(item.get("part") or 0),
+        int(item.get("chunk_index") or item.get("chunk_id") or 0),
     ))
     return documents
 
@@ -100,13 +91,33 @@ def _make_batches(entries: Iterable[str], max_chars: int = SUMMARY_BATCH_CHARS) 
     return batches
 
 
-def _invoke_text(prompt: str) -> str:
-    response = get_llm_client().invoke(prompt)
-    return str(response.content).strip()
+def _invoke_text(prompt: str, state=None) -> str:
+    llm = get_llm_client()
+    if not state or not state.get("is_stream"):
+        response = llm.invoke(prompt)
+        return str(response.content).strip()
+
+    run_id = state.get("run_id") or state.get("session_id")
+    final_answer = ""
+    buffer = ""
+    last_flush = time.monotonic()
+    for chunk in llm.stream(prompt):
+        delta = str(chunk.content)
+        final_answer += delta
+        buffer += delta
+        now = time.monotonic()
+        if len(buffer) >= 16 or now - last_flush >= 0.06:
+            push_to_session(run_id, SSEEvent.DELTA, {"delta": buffer})
+            buffer = ""
+            last_flush = now
+    if buffer:
+        push_to_session(run_id, SSEEvent.DELTA, {"delta": buffer})
+    state["answer_streamed"] = True
+    return final_answer.strip()
 
 
 @step_log("step_2_direct_synthesis")
-def step_2_direct_synthesis(question: str, sources: List[Dict]) -> str:
+def step_2_direct_synthesis(question: str, sources: List[Dict], state=None) -> str:
     context = "\n\n".join(
         f"<source id=\"{source['index']}\">\n"
         f"标题：{source.get('file_title') or source.get('title')} / "
@@ -114,7 +125,10 @@ def step_2_direct_synthesis(question: str, sources: List[Dict]) -> str:
         f"内容：\n{source.get('content', '')}\n</source>"
         for source in sources
     )
-    return _invoke_text(load_prompt("document_synthesis", question=question, context=context))
+    return _invoke_text(
+        load_prompt("document_synthesis", question=question, context=context),
+        state,
+    )
 
 
 @step_log("step_2_map_summary")
@@ -124,20 +138,34 @@ def step_2_map_summary(question: str, sources: List[Dict]) -> List[str]:
         f"{source.get('parent_title') or source.get('title')}\n{source.get('content', '')}"
         for source in sources
     ]
-    summaries = []
-    for batch in _make_batches(entries):
-        summaries.append(_invoke_text(load_prompt("summary_map", question=question, context=batch)))
-    return summaries
+    batches = _make_batches(entries)
+    prompts = [
+        load_prompt("summary_map", question=question, context=batch)
+        for batch in batches
+    ]
+    return [_invoke_text(prompt) for prompt in prompts]
 
 
 @step_log("step_3_reduce_summary")
-def step_3_reduce_summary(question: str, summaries: List[str]) -> str:
+def step_3_reduce_summary(question: str, summaries: List[str], state=None) -> str:
     current = summaries
     while len(current) > 1:
+        batches = _make_batches(current)
+        final_round = len(batches) == 1
         current = [
-            _invoke_text(load_prompt("summary_reduce", question=question, summaries=batch))
-            for batch in _make_batches(current)
+            _invoke_text(
+                load_prompt("summary_reduce", question=question, summaries=batch),
+                state if final_round else None,
+            )
+            for batch in batches
         ]
+    if current and state and state.get("is_stream") and not state.get("answer_streamed"):
+        push_to_session(
+            state.get("run_id") or state.get("session_id"),
+            SSEEvent.DELTA,
+            {"delta": current[0]},
+        )
+        state["answer_streamed"] = True
     return current[0] if current else ""
 
 
@@ -153,14 +181,14 @@ def node_document_summary(state):
         state["answer"] = "当前范围内没有可用于整体概括的资料。"
         state["sources"] = []
     else:
-        question = state.get("rewritten_query") or state.get("original_query") or "概括资料"
+        question = state.get("original_query") or "概括资料"
         content_chars = sum(len(source.get("content") or "") for source in candidates)
         if content_chars <= DIRECT_DOCUMENT_MAX_CHARS:
-            draft = step_2_direct_synthesis(question, candidates)
+            draft = step_2_direct_synthesis(question, candidates, state)
             mapped_count = 1
         else:
             mapped = step_2_map_summary(question, candidates)
-            draft = step_3_reduce_summary(question, mapped)
+            draft = step_3_reduce_summary(question, mapped, state)
             mapped_count = len(mapped)
         validated = reject_invalid_citations(draft, candidates)
         state["answer"], state["sources"] = compact_citations(validated, candidates)

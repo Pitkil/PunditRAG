@@ -3,22 +3,25 @@ import sys
 from app.clients.milvus_utils import get_milvus_client
 from app.core.logger import logger, node_log, step_log
 from app.llm.embedding_utils import generate_embeddings
-from app.query_process.agent.retrieval_utils import merge_unique_hits, search_chunks
+from app.query_process.agent.retrieval_utils import (
+    build_retrieval_query,
+    search_chunks,
+)
 from app.utils.task_utils import  add_done_task,add_running_task
 
 @step_log("step_1_data_validates")
 def step_1_data_validates(state):
     """校验"""
     item_names = state.get("item_names") or []
-    rewritten_query = state.get("rewritten_query")
-    if not rewritten_query:
-        logger.error("rewritten_query 不能为空")
-        raise ValueError("rewritten_query 不能为空")
-    return item_names, rewritten_query
+    original_query = state.get("original_query")
+    if not original_query:
+        logger.error("original_query 不能为空")
+        raise ValueError("original_query 不能为空")
+    return item_names, original_query
 
 @step_log("step_2_rewritten_query_embedding")
 def step_2_rewritten_query_embedding(state):
-    result = generate_embeddings([state["rewritten_query"]])
+    result = generate_embeddings([build_retrieval_query(state)])
     return result['dense'][0],result['sparse'][0]
 
 @step_log("step_3_milvus_hybrid_search")
@@ -61,24 +64,6 @@ def node_search_embedding(state):
     milvus_result = step_3_milvus_hybrid_search(
         dense_vector, sparse_vector, item_names, state.get("kb_ids", []), state.get("document_ids", [])
     )
-    if state.get("query_depth") == "deep" and state.get("query_aspects"):
-        facet_queries = [
-            f"{state['rewritten_query']}；重点检索：{aspect}"
-            for aspect in state["query_aspects"][:6]
-        ]
-        facet_embeddings = generate_embeddings(facet_queries)
-        facet_results = []
-        for index in range(len(facet_queries)):
-            facet_results.append(
-                step_3_milvus_hybrid_search(
-                    facet_embeddings["dense"][index],
-                    facet_embeddings["sparse"][index],
-                    item_names,
-                    state.get("kb_ids", []),
-                    state.get("document_ids", []),
-                )
-            )
-        milvus_result = merge_unique_hits(milvus_result, *facet_results)
     #返回结果即可
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return {"embedding_chunks": milvus_result}

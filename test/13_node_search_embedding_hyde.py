@@ -10,16 +10,27 @@ from app.core.logger import logger
 from app.query_process.agent.nodes.node_search_embedding_hyde import (
     node_search_embedding_hyde,
     step_1_data_validates,
+    step_2_call_llm,
 )
 from app.query_process.agent.state import create_query_default_state
+from unittest.mock import patch
+
+
+def test_hyde_failure_returns_empty_fallback():
+    with patch(
+        "app.query_process.agent.nodes.node_search_embedding_hyde.get_llm_client",
+        side_effect=TimeoutError("simulated timeout"),
+    ):
+        assert step_2_call_llm("测试问题") == ""
 
 
 if __name__ == "__main__":
     """HyDE 假设文档向量检索节点本地集成测试。"""
-    item_names, rewritten_query = step_1_data_validates(
-        {"item_names": [], "rewritten_query": "全库检索测试"}
+    item_names, original_query = step_1_data_validates(
+        {"item_names": [], "original_query": "全库检索测试"}
     )
-    assert item_names == [] and rewritten_query == "全库检索测试"
+    assert item_names == [] and original_query == "全库检索测试"
+    test_hyde_failure_returns_empty_fallback()
     test_state = create_query_default_state(
         session_id=f"test_search_embedding_hyde_{uuid4().hex}",
         original_query="RS-12数字万用表怎么测量电压？",
@@ -39,7 +50,7 @@ if __name__ == "__main__":
     ), "HyDE 检索结果包含过滤范围之外的资料"
 
     logger.info("=== HyDE 假设文档向量检索节点测试通过 ===")
-    logger.info(f"改写问题：{test_state['rewritten_query']}")
+    logger.info(f"原始问题：{test_state['original_query']}")
     logger.info(f"资料范围：{test_state['item_names']}")
     logger.info(f"返回切片数量：{len(chunks)}")
     logger.info(f"首条切片：{chunks[0].get('entity', {})}")

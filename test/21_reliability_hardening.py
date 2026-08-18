@@ -24,6 +24,7 @@ from app.query_process.agent.nodes import node_document_summary as summary_modul
 from app.query_process.agent.retrieval_utils import search_chunks
 from app.llm import embedding_utils
 from eval_utils import latency_metrics, stable_case_id
+from eval_workspace import EvalWorkspace
 
 
 def test_stable_case_ids_prevent_prefix_collisions():
@@ -142,6 +143,7 @@ def test_item_name_vectors_match_float16_collection_schema():
     search_client.has_collection.return_value = True
     with (
         patch.object(item_name_module, "get_milvus_client", return_value=search_client),
+        patch.object(item_name_module.milvus_config, "item_name_collection", "item_names"),
         patch.object(
             item_name_module,
             "generate_embeddings",
@@ -157,25 +159,30 @@ def test_item_name_vectors_match_float16_collection_schema():
     assert queried_vector.dtype == np.float16
 
 
-def test_subjective_preference_queries_are_rewritten_as_evidence_requests():
+def test_query_resolution_prompt_preserves_task_type():
     prompt = load_prompt(
         "rewritten_query_and_itemnames",
         history_text="",
+        scope_text="当前选择单篇文档",
         query="你最喜欢败犬女主里的谁",
     )
 
-    assert "主观偏好或推荐请求" in prompt
-    assert "资料中可验证的特点" in prompt
-    assert "不要直接给出选择" in prompt
+    assert "不得把人物评价识别成偏好选择" in prompt
+    assert "full_document 只表示执行策略" in prompt
+    assert "原问题 + 检索内容" in prompt
 
-    state = {}
+    state = {"original_query": "你觉得男主是什么样的人"}
     item_name_module.step_6_deal_state(
         state,
         {"confirmed_item_name_list": ["败犬女主太多了"], "options_item_name_list": []},
-        "主要角色有哪些；基于资料推荐其中一名并说明理由",
+        {
+            "rewritten_query": "主要角色有哪些；基于资料推荐其中一名并说明理由",
+            "full_document": False,
+        },
     )
     assert state["item_names"] == ["败犬女主太多了"]
-    assert "资料主题：败犬女主太多了" in state["rewritten_query"]
+    assert state["rewritten_query"] == "你觉得男主是什么样的人"
+    assert state["full_document"] is False
 
 
 def test_all_prompt_contracts_render_and_keep_critical_rules():
@@ -210,6 +217,7 @@ def test_all_prompt_contracts_render_and_keep_critical_rules():
         "rewritten_query_and_itemnames": load_prompt(
             "rewritten_query_and_itemnames",
             history_text="历史",
+            scope_text="当前选择知识库",
             query="当前问题",
         ),
         "summary_map": load_prompt("summary_map", question="总结问题", context="片段"),
@@ -223,9 +231,11 @@ def test_all_prompt_contracts_render_and_keep_critical_rules():
     assert len(rendered) == 10
     assert all(isinstance(prompt, str) and prompt.strip() for prompt in rendered.values())
     assert "候选资料正文" in rendered["answer_out"]
-    assert "当前资料中没有足够信息" in rendered["answer_out"]
+    assert "AI 通识回答" in rendered["answer_out"]
+    assert "AI 通识补充" in rendered["answer_out"]
     assert "每个来自资料的事实性结论" in rendered["answer_out"]
     assert "不可信数据" in rendered["answer_out"]
+    assert "当前显式资料范围" in rendered["rewritten_query_and_itemnames"]
     assert "字段与取值及单位的对应关系" in rendered["compress"]
     assert "不得把“分配到不同组”扩写成“随机分组”" in rendered["document_synthesis"]
     assert "不是回答问题" in rendered["hyde_prompt"]
@@ -234,6 +244,20 @@ def test_all_prompt_contracts_render_and_keep_critical_rules():
     assert '"item_names"' in rendered["rewritten_query_and_itemnames"]
     assert "本批次无相关信息" in rendered["summary_map"]
     assert "不要提及分批、Map、Reduce" in rendered["summary_reduce"]
+
+
+def test_eval_workspace_cleanup_preserves_reused_knowledge_base():
+    http_json = MagicMock()
+    workspace = EvalWorkspace(http_json, "http://import", "http://query", "run-1")
+    workspace.use_knowledge_base("shared-kb", owns_kb=False)
+    session_id = workspace.session_id("rgb", "q1")
+    workspace.cleanup()
+
+    http_json.assert_called_once_with(
+        "DELETE",
+        f"http://query/sessions/{session_id}",
+        timeout=120,
+    )
 
 
 if __name__ == "__main__":
@@ -246,8 +270,9 @@ if __name__ == "__main__":
         test_dense_spec_lines_are_grouped_with_heading_and_overlap,
         test_embedding_calls_are_serialized_for_shared_fp16_model,
         test_item_name_vectors_match_float16_collection_schema,
-        test_subjective_preference_queries_are_rewritten_as_evidence_requests,
+        test_query_resolution_prompt_preserves_task_type,
         test_all_prompt_contracts_render_and_keep_critical_rules,
+        test_eval_workspace_cleanup_preserves_reused_knowledge_base,
     ]
     failures = []
     for test in tests:

@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 import numpy as np
@@ -11,12 +12,20 @@ from app.clients.milvus_utils import (
     hybrid_search,
 )
 from app.clients.mongo_history_utils import get_recent_messages, save_chat_message
+from app.clients.mongo_workspace_utils import (
+    get_document,
+    list_documents,
+    list_knowledge_bases,
+)
 from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
 from app.llm.embedding_utils import generate_embeddings
 from app.llm.llm_util import get_llm_client
 from app.utils.task_utils import add_done_task, add_running_task
+
+
+PLANNER_TIMEOUT_SECONDS = float(os.getenv("PLANNER_TIMEOUT_SECONDS", "10"))
 
 
 def get_direct_chat_answer(query):
@@ -28,45 +37,54 @@ def get_direct_chat_answer(query):
     return ""
 
 
-QUERY_MODES = {"lookup", "explain", "summarize", "compare", "clarify"}
-QUERY_DEPTHS = {"brief", "normal", "deep"}
-
-
-def _fallback_query_mode(query: str) -> str:
-    value = str(query or "")
-    if any(word in value for word in ("比较", "对比", "区别", "差异", "异同")):
-        return "compare"
-    if any(word in value for word in ("总结", "概括", "梳理", "提纲", "核心内容", "主要内容")):
-        return "summarize"
-    if any(word in value for word in ("讲解", "解释", "分析", "原理", "流程", "为什么", "详细", "深入", "展开")):
-        return "explain"
-    return "lookup"
-
-
-def _fallback_query_depth(query: str) -> str:
-    value = str(query or "")
-    if any(word in value for word in ("详细", "深入", "全面", "系统", "展开", "继续", "更具体", "再补充")):
-        return "deep"
-    if any(word in value for word in ("简要", "简短", "一句话")):
-        return "brief"
-    return "normal"
-
-
-def _recent_document_ids(history_message_list, original_query: str) -> list[str]:
-    follow_up_words = ("继续", "详细一点", "更详细", "展开", "再说", "补充", "这个", "这篇", "该文", "上述", "它")
-    if not any(word in str(original_query or "") for word in follow_up_words):
-        return []
-    for message in reversed(history_message_list):
-        if message.get("role") != "assistant":
-            continue
-        document_ids = [
-            source.get("document_id")
-            for source in message.get("sources") or []
-            if source.get("document_id")
-        ]
+def build_scope_context(state):
+    """读取本轮显式范围；范围信息只帮助规划，不改变用户原问题。"""
+    scope_mode = state.get("scope_mode", "knowledge_base")
+    kb_ids = state.get("kb_ids") or []
+    document_ids = state.get("document_ids") or []
+    try:
+        kb_names = {
+            item.get("kb_id"): item.get("name") or item.get("kb_id")
+            for item in list_knowledge_bases()
+        }
         if document_ids:
-            return list(dict.fromkeys(document_ids))
-    return []
+            documents = [get_document(document_id) for document_id in document_ids]
+            documents = [document for document in documents if document]
+        elif scope_mode == "knowledge_base" and kb_ids:
+            selected_ids = set(kb_ids)
+            documents = [
+                document for document in list_documents()
+                if document.get("kb_id") in selected_ids
+            ]
+        else:
+            documents = []
+    except Exception as exc:
+        logger.warning(f"读取显式资料范围失败，按请求中的 ID 继续规划：{exc}")
+        kb_names = {}
+        documents = []
+
+    document_names = [
+        document.get("filename") or document.get("file_title") or document.get("document_id")
+        for document in documents[:8]
+    ]
+    state["scope_document_names"] = document_names
+    selected_kbs = [kb_names.get(kb_id, kb_id) for kb_id in kb_ids]
+
+    if document_ids:
+        scope_label = "用户当前明确选择的文档"
+    elif scope_mode == "knowledge_base":
+        scope_label = "用户当前明确选择的知识库"
+    else:
+        scope_label = "全部知识库"
+
+    context = (
+        f"范围模式：{scope_mode}\n"
+        f"范围含义：{scope_label}\n"
+        f"知识库：{'、'.join(selected_kbs) or '全部知识库'}\n"
+        f"范围内文档数量：{len(documents) if scope_mode != 'all' else '未限定'}\n"
+        f"范围内文档：{'、'.join(document_names) or '未指定单篇文档'}"
+    )
+    return context
 
 @step_log("node_item_name_confirm")
 def step_1_data_validates(state):
@@ -84,16 +102,12 @@ def step_2_chat_history(session_id):
     return get_recent_messages(session_id)
 
 @step_log("step_3_llm_itemnames_and_rewrite")
-def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
-    """结合历史对话识别主题或实体，并将问题改写为独立查询。"""
+def step_3_llm_itemnames_and_rewrite(history_message_list, original_query, scope_context=""):
+    """提取召回主题，并判断是否必须读取当前范围的全部正文。"""
     history_lines = []
     for message in history_message_list:
         role = message.get("role", "")
-        content = (
-            message.get("rewritten_query")
-            if role == "user" and message.get("rewritten_query")
-            else message.get("text", "")
-        )
+        content = message.get("text", "")
         related_names = message.get("item_names") or []
         related_documents = message.get("document_ids") or [
             source.get("document_id")
@@ -108,17 +122,32 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
     prompt = load_prompt(
         "rewritten_query_and_itemnames",
         history_text="\n".join(history_lines),
+        scope_text=scope_context or "未提供显式范围",
         query=original_query,
     )
     messages = [
         SystemMessage(
-            content="你是通用知识库查询理解助手，负责识别检索主题并改写用户问题。"
+            content="你是知识库检索规划助手，只提取召回主题和全文读取策略，不得改写或回答用户问题。"
         ),
         HumanMessage(content=prompt),
     ]
-    result = (get_llm_client(json_mode=True) | JsonOutputParser()).invoke(messages)
+    try:
+        result = (
+            get_llm_client(
+                json_mode=True,
+                timeout=PLANNER_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
+            | JsonOutputParser()
+        ).invoke(messages)
+    except Exception as exc:
+        logger.warning(f"查询规划超时或失败，按普通检索继续：{exc}")
+        return {
+            "rewritten_query": original_query,
+            "item_names": [],
+            "full_document": False,
+        }
 
-    rewritten_query = result.get("rewritten_query") or original_query
     item_names = result.get("item_names") or []
     if isinstance(item_names, str):
         item_names = [item_names]
@@ -126,24 +155,10 @@ def step_3_llm_itemnames_and_rewrite(history_message_list, original_query):
         logger.warning("模型返回的 item_names 格式无效，已使用空列表")
         item_names = []
 
-    mode = str(result.get("mode") or "").strip().lower()
-    depth = str(result.get("depth") or "").strip().lower()
-    aspects = result.get("aspects") or []
-    if mode not in QUERY_MODES:
-        mode = _fallback_query_mode(original_query)
-    if depth not in QUERY_DEPTHS:
-        depth = _fallback_query_depth(original_query)
-    if isinstance(aspects, str):
-        aspects = [aspects]
-    if not isinstance(aspects, list):
-        aspects = []
-
     return {
-        "rewritten_query": rewritten_query,
+        "rewritten_query": original_query,
         "item_names": list(dict.fromkeys(str(name).strip() for name in item_names if str(name).strip())),
-        "mode": mode,
-        "depth": depth,
-        "aspects": list(dict.fromkeys(str(value).strip() for value in aspects if str(value).strip()))[:8],
+        "full_document": result.get("full_document") is True,
     }
 
 @step_log("step_4_vector_query_item_name")
@@ -235,30 +250,18 @@ def step_6_deal_state(state, final_result, query_plan):
     optional_names = final_result.get("options_item_name_list", [])
 
     if isinstance(query_plan, str):
-        query_plan = {"rewritten_query": query_plan}
-    rewritten_query = query_plan.get("rewritten_query") or state.get("original_query", "")
-    state["rewritten_query"] = rewritten_query
-    state["query_mode"] = query_plan.get("mode") or _fallback_query_mode(rewritten_query)
-    state["query_depth"] = query_plan.get("depth") or _fallback_query_depth(rewritten_query)
-    state["query_aspects"] = query_plan.get("aspects") or []
-    if state["query_aspects"] and state["query_mode"] in {"explain", "compare"}:
-        aspect_context = "、".join(state["query_aspects"])
-        if aspect_context not in state["rewritten_query"]:
-            state["rewritten_query"] = f"{state['rewritten_query']}（需要覆盖：{aspect_context}）"
+        query_plan = {}
+    state["rewritten_query"] = state.get("original_query", "")
+    state["full_document"] = query_plan.get("full_document") is True
     state["answer"] = ""
 
     if confirmed_names:
         state["item_names"] = confirmed_names
-        topic_context = "、".join(confirmed_names)
-        if topic_context and topic_context not in rewritten_query:
-            state["rewritten_query"] = f"{rewritten_query}（资料主题：{topic_context}）"
         return
 
     state["item_names"] = []
     if optional_names:
         logger.info(f"主题匹配置信度不足，将执行知识库全局检索：{optional_names}")
-    if state["query_mode"] == "clarify" and not state.get("document_ids"):
-        state["answer"] = "请先明确要查询的资料或对象，或在顶部选择一份具体文档。"
 
 @step_log("step_7_save_user_chat_message")
 def step_7_save_user_chat_message(state):
@@ -271,9 +274,6 @@ def step_7_save_user_chat_message(state):
         item_names=state["item_names"],
         kb_ids=state.get("kb_ids", []),
         document_ids=state.get("document_ids", []),
-        query_mode=state.get("query_mode", ""),
-        query_depth=state.get("query_depth", ""),
-        query_aspects=state.get("query_aspects", []),
     )
 
 @node_log("node_item_name_confirm")
@@ -292,16 +292,22 @@ def node_item_name_confirm(state):
         state["history"] = history
         state["rewritten_query"] = original_query
         state["item_names"] = []
+        state["full_document"] = False
         state["answer"] = direct_answer
         step_7_save_user_chat_message(state)
         add_done_task(run_id, node_name, is_stream)
         return state
 
-    query_result = step_3_llm_itemnames_and_rewrite(history, original_query)
-    if not state.get("document_ids"):
-        state["document_ids"] = _recent_document_ids(history, original_query)
-    lookup_terms = query_result["item_names"] or [query_result["rewritten_query"]]
-    vector_dict = step_4_vector_query_item_name(lookup_terms, state.get("kb_ids", []))
+    scope_context = build_scope_context(state)
+    query_result = step_3_llm_itemnames_and_rewrite(
+        history,
+        original_query,
+        scope_context,
+    )
+    vector_dict = step_4_vector_query_item_name(
+        query_result["item_names"],
+        state.get("kb_ids", []),
+    ) if query_result["item_names"] else {}
     final_result = step_5_select_item_list(vector_dict)
 
     state["history"] = history

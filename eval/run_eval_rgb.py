@@ -15,11 +15,14 @@
 - 失败率 / 延迟
 """
 import json
+import os
 import statistics
 import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from eval_workspace import EvalWorkspace, new_eval_run_id
 
 EVAL_ROOT = Path(__file__).resolve().parent
 RGB_JSON = EVAL_ROOT / "raw" / "rgb" / "zh.json"
@@ -94,10 +97,15 @@ def main():
     step = max(1, len(data) // SAMPLE_N)
     sample = [data[i] for i in range(0, len(data), step)][:SAMPLE_N]
 
-    # 1. 创建独立知识库
-    kb = http_json("POST", f"{IMPORT_API}/knowledge-bases", {"name": "eval-rgb-zh", "description": "RGB官方中文评测集"})
-    kb_id = kb["kb_id"]
-    print(f"[1/4] 已创建独立知识库: {kb_id}")
+    workspace = EvalWorkspace(http_json, IMPORT_API, QUERY_API, new_eval_run_id())
+    reused_kb_id = os.getenv("EVAL_KB_ID", "").strip()
+    if reused_kb_id:
+        kb_id = workspace.use_knowledge_base(reused_kb_id, owns_kb=False)
+        print(f"[1/4] 复用评测知识库: {kb_id}")
+    else:
+        kb = http_json("POST", f"{IMPORT_API}/knowledge-bases", {"name": "eval-rgb-zh", "description": "RGB官方中文评测集"})
+        kb_id = workspace.use_knowledge_base(kb["kb_id"], owns_kb=True)
+        print(f"[1/4] 已创建独立知识库: {kb_id}")
 
     # 2. 把每条 positive 写入 .md 并上传
     print(f"[2/4] 导入 {len(sample)} 条官方 positive 文档...")
@@ -113,9 +121,12 @@ def main():
         doc_files.append(path)
         doc_id_map[fid] = item
     print(f"      生成 {len(doc_files)} 份文档，开始上传...")
-    upload = multipart_upload(f"{IMPORT_API}/upload", kb_id, doc_files)
-    task_ids = upload.get("task_ids", [])
-    statuses = wait_import(task_ids)
+    if reused_kb_id:
+        statuses = {"reused": {"status": "completed"}}
+    else:
+        upload = multipart_upload(f"{IMPORT_API}/upload", kb_id, doc_files)
+        task_ids = upload.get("task_ids", [])
+        statuses = wait_import(task_ids)
     failed = any(st.get("status") != "completed" for st in statuses.values())
     for tid, st in statuses.items():
         print(f"      导入任务 {tid}: {st.get('status')} err={st.get('error')}")
@@ -130,7 +141,7 @@ def main():
         qid = item["id"]
         fid = f"rgb_zh_{qid}"
         query = item["query"]
-        session_id = f"rgb-{qid}"
+        session_id = workspace.session_id("rgb", str(qid))
         try:
             payload = {
                 "query": query,
@@ -204,6 +215,7 @@ def main():
     result_file.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"\n结果已保存: {result_file}")
+    workspace.cleanup()
     return 0 if not failed else 1
 
 

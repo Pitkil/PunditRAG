@@ -37,7 +37,7 @@ if __name__ == "__main__":
     assert all(document.get("snippet") for document in documents), "搜索结果缺少摘要"
 
     logger.info("=== 百炼 MCP 网络搜索节点测试通过 ===")
-    logger.info(f"改写问题：{test_state['rewritten_query']}")
+    logger.info(f"原始问题：{test_state['original_query']}")
     logger.info(f"返回网页数量：{len(documents)}")
     logger.info(f"首条标题：{documents[0]['title']}")
     logger.info(f"首条地址：{documents[0]['url']}")

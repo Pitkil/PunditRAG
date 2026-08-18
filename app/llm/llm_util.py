@@ -10,7 +10,12 @@ from app.core.logger import logger
 
 llm_client_cache = {}
 
-def get_llm_client(model: Optional[str] = None, json_mode: bool = False) -> ChatOpenAI:
+def get_llm_client(
+    model: Optional[str] = None,
+    json_mode: bool = False,
+    timeout: Optional[float] = None,
+    max_retries: int = 2,
+) -> ChatOpenAI:
     '''
      获取带全局缓存的LangChain ChatOpenAI客户端实例
 
@@ -19,7 +24,7 @@ def get_llm_client(model: Optional[str] = None, json_mode: bool = False) -> Chat
      json_model:是否开启JSON输出模式
     '''
     target_model = model or llm_config.llm_model 
-    cache_key = (target_model,json_mode)
+    cache_key = (target_model, json_mode, timeout, max_retries)
     if cache_key in llm_client_cache:
         logger.debug(f"[LLM客户端] 缓存命中，直接返回实例：模型={target_model}，JSON模式={json_mode}")
         return llm_client_cache[cache_key]
@@ -32,7 +37,9 @@ def get_llm_client(model: Optional[str] = None, json_mode: bool = False) -> Chat
     logger.info(f"[LLM客户端] 开始初始化新实例：模型={target_model}，JSON模式={json_mode}")
 
     #参数配置
-    extra_params = {"enable_thinkiung":False} # 千问专属：关闭思考链输出，减少冗余内容
+    extra_params = {}
+    if "dashscope.aliyuncs.com" in llm_config.base_url or target_model.lower().startswith("qwen"):
+        extra_params["enable_thinking"] = False
     model_kwarges = {}
 
     if json_mode:
@@ -45,7 +52,9 @@ def get_llm_client(model: Optional[str] = None, json_mode: bool = False) -> Chat
             temperature=llm_config.llm_temperature or 0.1,
             api_key = SecretStr(llm_config.api_key),
             base_url= llm_config.base_url,
-            extra_body=extra_params,
+            timeout=timeout,
+            max_retries=max_retries,
+            extra_body=extra_params or None,
             model_kwargs=model_kwarges,
         )
     except LangChainException as e:

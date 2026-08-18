@@ -15,6 +15,8 @@ from app.query_process.agent.source_utils import (
 )
 import re
 
+GENERAL_KNOWLEDGE_NOTICE = "> **AI 通识回答**：当前知识库未提供直接依据。"
+
 @step_log("step_1_data_validates")
 def step_1_data_validates(state):
     """
@@ -26,8 +28,7 @@ def step_1_data_validates(state):
     #完整答案就已经存在
     #说明：1.搜索关键词不确定 2.未找到关键词
     if answer:
-        if is_stream:
-            #模拟这个答案流式输出
+        if is_stream and not state.get("answer_streamed", False):
             push_to_session(run_id, SSEEvent.DELTA, {"delta": answer})
         set_task_result(run_id, "answer", answer)
         return True #返回 True：已有答案，本轮处理完毕，不用走后续流程
@@ -39,15 +40,21 @@ def step_2_data_validates(state):
     reranked_docs = deduplicate_documents(state.get("reranked_docs", []))
     state["reranked_docs"] = reranked_docs
     item_names = state.get("item_names", [])
-    rewritten_query = state.get("rewritten_query", "")
-    if not reranked_docs or len(reranked_docs) == 0 or not rewritten_query:
-        logger.warning("reranked_docs为空或rewritten_query为空，无法继续处理。")
-        raise ValueError("reranked_docs为空或rewritten_query为空，无法继续处理。")
+    original_query = state.get("original_query", "")
+    if not original_query:
+        logger.warning("original_query为空，无法继续处理。")
+        raise ValueError("original_query为空，无法继续处理。")
 
-    return history, reranked_docs, item_names, rewritten_query
+    return history, reranked_docs, item_names, original_query
 
 @ step_log("step_3_make_prompt")
-def step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_query):
+def _clean_history_text(text, limit=1200):
+    """移除旧引用编号并限制长度，历史仅用于对话理解。"""
+    cleaned = re.sub(r"(?:\[\d+\])+", "", str(text or ""))
+    return cleaned.strip()[:limit]
+
+
+def step_3_make_prompt(state, history, reranked_docs, item_names, original_query):
     context_chunk_list = []
     for number, chunk in enumerate(reranked_docs,start=1):
         score_text = (
@@ -61,31 +68,39 @@ def step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_quer
             f"内容:\n{chunk.get('text') or chunk.get('content') or ''}\n"
             f"</source>"
         )
-    context_chunk_str = "\n\n".join(context_chunk_list)
+    context_chunk_str = "\n\n".join(context_chunk_list) or "无可用参考内容"
 
     history_text = "没有历史聊天记录!"
-    if history and len(history) > 0:
+    if history:
         history_lines = []
         for msg in history:
-            if msg.get("role") != "user":
+            role = msg.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = msg.get("text") or msg.get("rewritten_query") or ""
+            cleaned = _clean_history_text(content)
+            if not cleaned:
                 continue
             history_lines.append(
-                f"角色:user,内容:{msg.get('rewritten_query') or msg.get('text', '')}"
-                f",关联主体: {'、'.join(msg.get('item_names', []))}"
+                f"角色:{role},内容:{cleaned}"
             )
-        history_text = "\n".join(history_lines) or "没有历史用户问题!"
+        history_text = "\n".join(history_lines) or "没有可用历史对话!"
 
     item_name = "本次关联主体:" + ",".join(item_names) if item_names and len(item_names) > 0 else '没有关联主体'
     # 加载提示词
     available_images = state.get("image_urls", [])
     evidence_quality = state.get("evidence_quality", "qualified")
     evidence_notice = {
+        "full_context": "已读取用户明确选择范围内的完整正文；请直接依据正文回答并逐项标注来源。",
         "qualified": "候选内容已通过相关性阈值，但仍须逐条核对正文后作答。",
-        "low": "候选内容的重排分低，仅用于让你核验是否存在间接但有效的依据；不得为了回答而强行关联。",
+        "low": "候选内容来自用户选定范围，但重排分较低（跨语言或指代查询也可能导致低分）；请直接核对正文，只使用其中确实支持问题的内容。",
         "unscored": "候选内容未经过本地重排，请严格依据正文判断是否足以作答。",
-    }.get(evidence_quality, "未提供可用候选内容。")
+    }.get(
+        evidence_quality,
+        "未提供可用候选内容，本轮不存在任何 source id。请使用稳定通识回答，且不得输出任何 [n] 引用。",
+    )
     prompt = load_prompt("answer_out",context = context_chunk_str,
-                history = history_text, item_names = item_name, question = rewritten_query,
+                history = history_text, item_names = item_name, question = original_query,
                 evidence_notice = evidence_notice,
                 image_urls = "\n".join(available_images) if available_images else "无可用图片")
 
@@ -177,13 +192,26 @@ def step_5_build_sources(state, reranked_docs):
     candidates = build_source_records(reranked_docs)
     original_answer = state.get("answer", "")
     validated_answer = reject_invalid_citations(original_answer, candidates)
-    if validated_answer != original_answer:
+    invalid_citation = validated_answer != original_answer
+    if invalid_citation:
         logger.warning("答案引用了本轮不存在的来源编号，已拒绝该答案")
-    state["answer"], state["sources"] = compact_citations(validated_answer, candidates)
+    answer, sources = compact_citations(validated_answer, candidates)
+    if invalid_citation:
+        state["answer_basis"] = "refused"
+    elif sources:
+        state["answer_basis"] = "sources"
+        stripped = answer.lstrip()
+        if stripped.startswith(GENERAL_KNOWLEDGE_NOTICE):
+            answer = stripped[len(GENERAL_KNOWLEDGE_NOTICE):].lstrip()
+    else:
+        state["answer_basis"] = "general"
+        if answer.strip() and not answer.lstrip().startswith(GENERAL_KNOWLEDGE_NOTICE):
+            answer = f"{GENERAL_KNOWLEDGE_NOTICE}\n\n{answer.strip()}"
+    state["answer"], state["sources"] = answer, sources
     set_task_result(
         state.get("run_id") or state.get("session_id"),
         "answer",
-        validated_answer,
+        state["answer"],
     )
 
 @step_log("step_6_save_chat_history")
@@ -201,9 +229,6 @@ def step_6_save_chat_history(state):
         sources=state.get("sources", []),
         kb_ids=state.get("kb_ids", []),
         document_ids=state.get("document_ids", []),
-        query_mode=state.get("query_mode", ""),
-        query_depth=state.get("query_depth", ""),
-        query_aspects=state.get("query_aspects", []),
     )
 
 @node_log("node_answer_output")
@@ -215,9 +240,9 @@ def node_answer_output(state):
     add_running_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream", False))
     has_answer = step_1_data_validates(state)
     if not has_answer:
-        history, reranked_docs, item_names, rewritten_query = step_2_data_validates(state)
+        history, reranked_docs, item_names, original_query = step_2_data_validates(state)
         step_5_extract_chunk_images(state, reranked_docs)
-        prompt = step_3_make_prompt(state, history, reranked_docs, item_names, rewritten_query)
+        prompt = step_3_make_prompt(state, history, reranked_docs, item_names, original_query)
         step_4_generate_answer(state, prompt)
         step_5_filter_answer_images(state)
         step_5_build_sources(state, reranked_docs)

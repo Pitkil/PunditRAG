@@ -20,13 +20,13 @@ def get_reranker_model():
     if _reranker_model is None:
         with _reranker_lock:
             if _reranker_model is None:
-                local_path = reranker_config.bge_reranker_large.strip()
+                local_path = reranker_config.bge_reranker_path.strip()
                 model_name = local_path if local_path and _has_model_weights(Path(local_path)) else reranker_config.bge_reranker_model_id
                 if local_path and model_name != local_path:
                     logger.warning(f"Reranker本地目录为空或不存在：{local_path}，改用模型仓库：{model_name}")
                 _reranker_model= FlagReranker(
                     model_name_or_path=model_name,
                     device=reranker_config.bge_reranker_device,
-                    use_fp16=reranker_config.bge_reranker_fp16
+                    use_fp16=reranker_config.bge_reranker_fp16,
                 )
     return _reranker_model

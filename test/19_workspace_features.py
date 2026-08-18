@@ -86,6 +86,7 @@ def test_workspace_api_contract():
 
     with (
         patch.object(query_server, "list_chat_sessions", return_value=[]),
+        patch.object(query_server, "count_chat_sessions", return_value=125),
         patch.object(query_server, "list_knowledge_bases", return_value=knowledge_bases),
         patch.object(
             query_server,
@@ -99,6 +100,11 @@ def test_workspace_api_contract():
     ):
         query_client = TestClient(query_server.app)
         import_client = TestClient(import_server.app)
+
+        sessions = query_client.get("/sessions?limit=50&offset=100")
+        assert sessions.status_code == 200
+        assert sessions.json() == {"items": [], "total": 125, "has_more": True}
+        query_server.list_chat_sessions.assert_called_once_with(limit=50, offset=100)
 
         response = query_client.post(
             "/query",

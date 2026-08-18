@@ -10,9 +10,12 @@ from app.conf.retrieval_config import retrieval_config
 from app.utils.task_utils import add_running_task
 from app.core.logger import logger, step_log
 from app.query_process.agent.source_utils import deduplicate_documents
+from app.clients.milvus_utils import get_milvus_client
+from app.query_process.agent.retrieval_utils import expand_reranked_neighbors
 load_dotenv()
 
 RERANK_MAX_TOPK = retrieval_config.rerank_max_top_k
+RERANK_INPUT_TOPK = retrieval_config.rerank_input_top_k
 RERANK_MIN_TOPK = retrieval_config.rerank_min_top_k
 RERANK_FALLBACK_TOPK = retrieval_config.rerank_fallback_top_k
 RERANK_GAP_RATIO = retrieval_config.rerank_gap_ratio
@@ -80,19 +83,36 @@ def step_2_merged_rrf_and_mcp(rrf_chunks, web_search_docs):
                }
             )
     return final_list
+
+
+def step_2_limit_rerank_candidates(final_chunk_list):
+    """限制本地重排输入，同时保留已启用的联网候选。"""
+    local_docs = [item for item in final_chunk_list if item.get("type") != "web"][:RERANK_INPUT_TOPK]
+    web_docs = [item for item in final_chunk_list if item.get("type") == "web"]
+    return local_docs + web_docs
 def step_3_rerank_score_and_sort(state, final_chunk_list):
     """
     rerank打分排序
     """
-    #获取重写问题
-    rewritten_query = state.get("rewritten_query") or state.get("original_query")
-    text_list = [item.get("text") for item in final_chunk_list]
+    original_query = state.get("original_query")
     question_pairs = []
-    for text in text_list:
-        # 重排必须读取原始证据，避免在排序前调用 LLM 改写或丢失数字细节。
-        question_pairs.append((rewritten_query, text or ""))
+    for item in final_chunk_list:
+        # 文档名和章节名属于候选自身的元数据，对每个切片一致提供；
+        # 用户原问题仍保持不变，避免标题被拼进问题后只抬高标题页。
+        candidate_text = "\n".join(
+            value
+            for value in (
+                f"文档：{item.get('file_title')}" if item.get("file_title") else "",
+                f"章节：{item.get('parent_title') or item.get('title')}"
+                if item.get("parent_title") or item.get("title")
+                else "",
+                item.get("text") or "",
+            )
+            if value
+        )
+        question_pairs.append((original_query, candidate_text))
 
-    local_path = reranker_config.bge_reranker_large.strip()
+    local_path = reranker_config.bge_reranker_path.strip()
     local_dir = Path(local_path) if local_path else None
     local_ready = bool(
         local_dir
@@ -148,23 +168,12 @@ def step_4_chunk_topk(chunk_list_score_sorted, minimum_topk=None):
     return final_chunk_list
 
 
-def step_4_promote_section_diversity(chunks):
-    """深度讲解优先覆盖不同文档章节，再补回同章节的其他高分切片。"""
-    diverse, repeated, seen = [], [], set()
-    for chunk in chunks:
-        key = (
-            chunk.get("document_id") or chunk.get("url") or chunk.get("file_title"),
-            chunk.get("parent_title") or chunk.get("title"),
-        )
-        target = repeated if key in seen else diverse
-        target.append(chunk)
-        seen.add(key)
-    return diverse + repeated
-
 def step_5_low_confidence_fallback(chunk_list_score_sorted):
-    """让回答模型核验少量低分候选，避免重排节点替最终模型提前拒答。"""
+    """保留非零低分候选供回答模型核验，丢弃已被重排判为完全无关的内容。"""
     fallback = []
     for chunk in chunk_list_score_sorted[:RERANK_FALLBACK_TOPK]:
+        if float(chunk.get("score") or 0.0) <= 0.0:
+            continue
         fallback.append({**chunk, "low_confidence": True})
     return fallback
 
@@ -179,29 +188,35 @@ def node_rerank(state):
     if not final_chunk_list:
         state["reranked_docs"] = []
         state["evidence_quality"] = "none"
-        state["answer"] = "没有检索到足够的相关资料，暂时无法基于知识库回答这个问题。"
         add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
         return state
+    final_chunk_list = step_2_limit_rerank_candidates(final_chunk_list)
     final_chunk_list_score_sorted = step_3_rerank_score_and_sort(state,final_chunk_list)
     final_chunk_list_score_sorted = deduplicate_documents(final_chunk_list_score_sorted)
-    needs_diversity = state.get("query_depth") == "deep" or state.get("query_mode") in {"explain", "compare"}
     if any(chunk.get("score") is None for chunk in final_chunk_list_score_sorted):
         final_chunk_list_score_sorted_topk = final_chunk_list_score_sorted[:RERANK_MAX_TOPK]
         state["evidence_quality"] = "unscored"
     else:
-        minimum_topk = 4 if state.get("query_depth") == "deep" or state.get("query_mode") == "compare" else None
-        final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted, minimum_topk)
+        final_chunk_list_score_sorted_topk = step_4_chunk_topk(final_chunk_list_score_sorted)
         if final_chunk_list_score_sorted_topk:
             state["evidence_quality"] = "qualified"
         else:
             final_chunk_list_score_sorted_topk = step_5_low_confidence_fallback(
                 final_chunk_list_score_sorted
             )
-            state["evidence_quality"] = "low"
-    if needs_diversity:
-        final_chunk_list_score_sorted_topk = step_4_promote_section_diversity(
-            final_chunk_list_score_sorted_topk
-        )
+            state["evidence_quality"] = (
+                "low" if final_chunk_list_score_sorted_topk else "none"
+            )
     state["reranked_docs"] = final_chunk_list_score_sorted_topk
+    if state.get("document_ids") and state["reranked_docs"]:
+        client = get_milvus_client()
+        if client:
+            state["reranked_docs"] = deduplicate_documents(
+                expand_reranked_neighbors(
+                    client,
+                    state["reranked_docs"],
+                    retrieval_config.neighbor_expand_parts,
+                )
+            )
     add_done_task(run_id, sys._getframe().f_code.co_name, state.get("is_stream"))
     return state

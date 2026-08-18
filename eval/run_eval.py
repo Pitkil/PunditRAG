@@ -1,15 +1,14 @@
 """Reproducible end-to-end evaluation for the local Chinese QA set."""
 
 import json
-import os
 import re
 import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 
+from eval_workspace import EvalWorkspace, new_eval_run_id
 from eval_utils import latency_metrics, rate
 
 
@@ -23,6 +22,7 @@ REFUSAL_KEYWORDS = (
     "无法", "没有找到", "未找到", "没有相关资料", "没有相关信息",
     "没有足够信息", "无法回答", "不能回答", "无法确认", "暂未", "不能确定", "无法确定",
 )
+GENERAL_KNOWLEDGE_NOTICE = "> **AI 通识回答**：当前知识库未提供直接依据。"
 
 
 def http_json(method, url, body=None, timeout=120, retries=0):
@@ -111,12 +111,13 @@ def main():
     if not cases:
         raise ValueError("自建评测集没有 cases，无法运行")
 
-    eval_run_id = os.getenv("EVAL_RUN_ID", "").strip() or datetime.now(
-        timezone.utc
-    ).strftime("%Y%m%dT%H%M%S%fZ")
+    eval_run_id = new_eval_run_id()
+    workspace = EvalWorkspace(http_json, IMPORT_API, QUERY_API, eval_run_id)
 
+    import os
     kb_id = os.getenv("EVAL_KB_ID", "").strip()
     if kb_id:
+        workspace.use_knowledge_base(kb_id, owns_kb=False)
         print(f"复用已有评测知识库: {kb_id}")
         statuses = wait_documents(kb_id)
     else:
@@ -125,7 +126,7 @@ def main():
             f"{IMPORT_API}/knowledge-bases",
             {"name": f"eval-{dataset.get('name', 'selfbuilt')}", "description": "可复现自建问答评测"},
         )
-        kb_id = kb["kb_id"]
+        kb_id = workspace.use_knowledge_base(kb["kb_id"], owns_kb=True)
         upload = multipart_upload(f"{IMPORT_API}/upload", kb_id, document_paths)
         statuses = wait_import(upload.get("task_ids", []))
     import_failed = not statuses or any(
@@ -144,7 +145,7 @@ def main():
                 f"{QUERY_API}/query",
                 {
                     "query": case["query"],
-                    "session_id": f"selfbuilt-{eval_run_id}-{qid}",
+                    "session_id": workspace.session_id("selfbuilt", qid),
                     "scope_mode": "knowledge_base",
                     "kb_ids": [kb_id],
                     "document_ids": [],
@@ -167,7 +168,12 @@ def main():
         expected_terms = [normalize(term) for term in case.get("expected_terms", []) if normalize(term)]
         forbidden_terms = [normalize(term) for term in case.get("forbidden_terms", []) if normalize(term)]
         answer_normalized = normalize(answer)
-        refused = any(keyword in answer for keyword in REFUSAL_KEYWORDS)
+        general_knowledge_disclosed = answer.lstrip().startswith(GENERAL_KNOWLEDGE_NOTICE)
+        # “尚未发现生命证据”等正常通识结论不等于系统拒答。
+        refused = not general_knowledge_disclosed and any(
+            keyword in answer for keyword in REFUSAL_KEYWORDS
+        )
+        knowledge_gap_handled = refused or general_knowledge_disclosed
         answer_correct = (
             all(term in answer_normalized for term in expected_terms)
             and not any(term in answer_normalized for term in forbidden_terms)
@@ -193,6 +199,8 @@ def main():
                 "source_hit": source_hit,
                 "answer_correct": answer_correct,
                 "refused": refused,
+                "general_knowledge_disclosed": general_knowledge_disclosed,
+                "knowledge_gap_handled": knowledge_gap_handled,
                 "latency": round(latency, 3) if latency is not None else None,
                 "error": error,
             }
@@ -206,6 +214,12 @@ def main():
         "source_hit_rate": rate(result["source_hit"] for result in answerable_results),
         "answer_accuracy": rate(result["answer_correct"] for result in answerable_results),
         "unanswerable_refusal_rate": rate(result["refused"] for result in unanswerable_results),
+        "unanswerable_disclosure_rate": rate(
+            result["general_knowledge_disclosed"] for result in unanswerable_results
+        ),
+        "unanswerable_handled_rate": rate(
+            result["knowledge_gap_handled"] for result in unanswerable_results
+        ),
         "failure_rate": rate(bool(result["error"]) for result in results),
         **latency_metrics(result["latency"] for result in results),
         "config": {
@@ -224,6 +238,7 @@ def main():
     RESULT_PATH.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"结果已保存: {RESULT_PATH}")
+    workspace.cleanup()
     return 1 if import_failed else 0
 
 

@@ -20,6 +20,8 @@
 
 ## 本地检查
 
+下面的检查与 GitHub Actions 中的离线回归一致，不需要 LLM、MinerU 或联网搜索密钥。Pull Request 还会执行 Dockerfile/BuildKit 校验；完整镜像只在合并到 `main` 或手动触发时构建：
+
 ```powershell
 $tests = @(
   "16_node_rerank.py",
@@ -38,6 +40,8 @@ foreach ($test in $tests) {
 .\.venv\Scripts\python.exe -m compileall -q app eval test
 git diff --check
 ```
+
+依赖外部模型服务、GPU 或完整基础设施的导入和端到端评测不在普通 PR CI 中运行。涉及检索、Prompt 或路由行为的改动仍应在 PR 描述中附上对应的人工评测结果。
 
 ## Pull Request
 

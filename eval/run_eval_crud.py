@@ -11,11 +11,14 @@
 5. 对照官方 answers 计算指标
 """
 import json
+import os
 import statistics
 import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from eval_workspace import EvalWorkspace, new_eval_run_id
 
 EVAL_ROOT = Path(__file__).resolve().parent
 CRUD_JSON = EVAL_ROOT / "raw" / "crudrag" / "split_merged.json"
@@ -82,10 +85,15 @@ def main():
     step = max(1, len(items) // SAMPLE_N)
     sample = [items[i] for i in range(0, len(items), step)][:SAMPLE_N]
 
-    # 1. 独立知识库
-    kb = http_json("POST", f"{IMPORT_API}/knowledge-bases", {"name": "eval-crudrag-qa1", "description": "CRUD-RAG官方中文问答子集"})
-    kb_id = kb["kb_id"]
-    print(f"[1/4] 已创建独立知识库: {kb_id}")
+    workspace = EvalWorkspace(http_json, IMPORT_API, QUERY_API, new_eval_run_id())
+    reused_kb_id = os.getenv("EVAL_KB_ID", "").strip()
+    if reused_kb_id:
+        kb_id = workspace.use_knowledge_base(reused_kb_id, owns_kb=False)
+        print(f"[1/4] 复用评测知识库: {kb_id}")
+    else:
+        kb = http_json("POST", f"{IMPORT_API}/knowledge-bases", {"name": "eval-crudrag-qa1", "description": "CRUD-RAG官方中文问答子集"})
+        kb_id = workspace.use_knowledge_base(kb["kb_id"], owns_kb=True)
+        print(f"[1/4] 已创建独立知识库: {kb_id}")
 
     # 2. news1 写入 .md 并上传
     print(f"[2/4] 导入 {len(sample)} 条官方 news1 文档...")
@@ -98,9 +106,12 @@ def main():
         path = doc_dir / f"{fid}.md"
         path.write_text(content, encoding="utf-8")
         doc_files.append(path)
-    upload = multipart_upload(f"{IMPORT_API}/upload", kb_id, doc_files)
-    task_ids = upload.get("task_ids", [])
-    statuses = wait_import(task_ids)
+    if reused_kb_id:
+        statuses = {"reused": {"status": "completed"}}
+    else:
+        upload = multipart_upload(f"{IMPORT_API}/upload", kb_id, doc_files)
+        task_ids = upload.get("task_ids", [])
+        statuses = wait_import(task_ids)
     failed = any(st.get("status") != "completed" for st in statuses.values())
     for tid, st in statuses.items():
         print(f"      导入任务 {tid}: {st.get('status')} err={st.get('error')}")
@@ -119,7 +130,7 @@ def main():
         try:
             payload = {
                 "query": query,
-                "session_id": f"crud-{qid}",
+                "session_id": workspace.session_id("crud", qid),
                 "kb_ids": [kb_id],
                 "is_stream": False,
                 "enable_web_search": False,
@@ -180,6 +191,7 @@ def main():
     result_file.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"\n结果已保存: {result_file}")
+    workspace.cleanup()
     return 0 if not failed else 1
 
 

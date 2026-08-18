@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, END
 from loguru import logger
 
 from app.query_process.agent.nodes.node_answer_output import node_answer_output
+from app.query_process.agent.nodes.node_document_context import node_document_context
 from app.query_process.agent.nodes.node_document_summary import (
     is_document_summary_request,
     node_document_summary,
@@ -26,6 +27,7 @@ query_graph.add_node("node_rrf", node_rrf)
 query_graph.add_node("node_rerank", node_rerank)
 query_graph.add_node("node_answer_output", node_answer_output)
 query_graph.add_node("node_document_summary", node_document_summary)
+query_graph.add_node("node_document_context", node_document_context)
 
 #指定入口节点（条件边）
 query_graph.set_entry_point("node_item_name_confirm")
@@ -37,6 +39,8 @@ def router(state:QueryGraphState):
         return "node_answer_output"
     if is_document_summary_request(state):
         return "node_document_summary"
+    if state.get("document_context_complete"):
+        return "node_answer_output"
     else:
         #并发执行多路检索
         #1.向量数据库检索 2.HyDE(假设性文档嵌入)检索 3.mcp搜索
@@ -45,8 +49,10 @@ def router(state:QueryGraphState):
             routes.append("node_web_search_mcp")
         return tuple(routes)
 
+query_graph.add_edge("node_item_name_confirm", "node_document_context")
+
 query_graph.add_conditional_edges(
-    "node_item_name_confirm",
+    "node_document_context",
     router,
     {
         "node_search_embedding":"node_search_embedding",

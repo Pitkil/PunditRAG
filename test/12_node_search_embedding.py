@@ -32,7 +32,7 @@ if __name__ == "__main__":
     ), "检索结果包含过滤范围之外的资料"
 
     logger.info("=== 普通向量混合检索节点测试通过 ===")
-    logger.info(f"改写问题：{test_state['rewritten_query']}")
+    logger.info(f"原始问题：{test_state['original_query']}")
     logger.info(f"资料范围：{test_state['item_names']}")
     logger.info(f"返回切片数量：{len(chunks)}")
     logger.info(f"首条切片：{chunks[0].get('entity', {})}")

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,15 +13,16 @@ from app.utils.task_utils import add_done_task, add_running_task
 
 DASHSCOPE_BASE_URL_STREAM_ABLE_HTTP = mcp_config.mcp_base_url
 DASHSCOPE_API_KEY = mcp_config.api_key
+WEB_SEARCH_TIMEOUT_SECONDS = float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "30"))
 
 
 @step_log("step_1_data_validate")
 def step_1_data_validate(state):
-    rewritten_query = state["rewritten_query"]
-    if not rewritten_query:
-        logger.error("rewritten_query不能为空!")
-        raise ValueError("rewritten_query不能为空!")
-    return rewritten_query
+    original_query = state["original_query"]
+    if not original_query:
+        logger.error("original_query不能为空!")
+        raise ValueError("original_query不能为空!")
+    return original_query
 
 
 @step_log("node_web_search_mcp_async")
@@ -31,8 +33,8 @@ async def node_web_search_mcp_async(rewritten_query: str, count: int = 5):
         params={
             "url": DASHSCOPE_BASE_URL_STREAM_ABLE_HTTP,
             "headers": {"Authorization": DASHSCOPE_API_KEY},
-            "timeout": 300,
-            "sse_read_timeout": 300,
+            "timeout": WEB_SEARCH_TIMEOUT_SECONDS,
+            "sse_read_timeout": WEB_SEARCH_TIMEOUT_SECONDS,
         },
     )
 

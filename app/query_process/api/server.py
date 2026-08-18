@@ -5,15 +5,17 @@ from threading import Lock
 from typing import Literal
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from app.clients.mongo_history_utils import get_recent_messages
 from app.clients.mongo_workspace_utils import (
+    count_chat_sessions,
     delete_chat_session,
     ensure_chat_session,
+    get_chat_session,
     get_document,
     list_chat_sessions,
     rename_chat_session,
@@ -284,9 +286,6 @@ def get_history(session_id: str, limit: int = 50):
                 "sources": item.get("sources", []),
                 "kb_ids": item.get("kb_ids", []),
                 "document_ids": item.get("document_ids", []),
-                "query_mode": item.get("query_mode", ""),
-                "query_depth": item.get("query_depth", ""),
-                "query_aspects": item.get("query_aspects", []),
                 "ts": item.get("ts"),
             }
         )
@@ -298,13 +297,30 @@ class SessionPayload(BaseModel):
 
 
 @app.get("/sessions")
-def get_sessions():
-    return {"items": list_chat_sessions()}
+def get_sessions(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    total = count_chat_sessions()
+    items = list_chat_sessions(limit=limit, offset=offset)
+    return {
+        "items": items,
+        "total": total,
+        "has_more": offset + len(items) < total,
+    }
 
 
 @app.post("/sessions")
 def create_session(payload: SessionPayload):
     return ensure_chat_session(str(uuid.uuid4()), payload.title)
+
+
+@app.get("/sessions/{session_id}")
+def get_session(session_id: str):
+    result = get_chat_session(session_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return result
 
 
 @app.patch("/sessions/{session_id}")

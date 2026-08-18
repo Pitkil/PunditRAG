@@ -69,21 +69,20 @@ def test_step_2_data_validates():
     assert history == state["history"]
     assert docs == state["reranked_docs"]
     assert item_names == ["RS-12数字万用表"]
-    assert query == state["rewritten_query"]
+    assert query == state["original_query"]
 
 
-def test_step_2_rejects_empty_docs():
-    try:
-        answer_module.step_2_data_validates(build_state(reranked_docs=[]))
-    except ValueError as exc:
-        assert "reranked_docs为空" in str(exc)
-    else:
-        raise AssertionError("reranked_docs 为空时应抛出 ValueError")
+def test_step_2_allows_empty_docs_for_general_knowledge():
+    state = build_state(reranked_docs=[])
+    _, docs, _, query = answer_module.step_2_data_validates(state)
+    assert docs == []
+    assert query == state["original_query"]
 
 
 def test_step_3_make_prompt():
     state = build_state(
         evidence_quality="low",
+        query_uses_history=True,
         history=[
             {
                 "role": "assistant",
@@ -111,11 +110,24 @@ def test_step_3_make_prompt():
     assert "</source>" in kwargs["context"]
     assert "RS-12数字万用表" in kwargs["item_names"]
     assert "如何测量直流电压" in kwargs["history"]
-    assert "上一轮助手结论" not in kwargs["history"]
+    assert "上一轮助手结论" in kwargs["history"]
     assert "[7]" not in kwargs["history"]
-    assert kwargs["question"] == state["rewritten_query"]
-    assert "重排分低" in kwargs["evidence_notice"]
-    assert "强行关联" in kwargs["evidence_notice"]
+    assert kwargs["question"] == state["original_query"]
+    assert "重排分较低" in kwargs["evidence_notice"]
+    assert "直接核对正文" in kwargs["evidence_notice"]
+
+    empty_state = build_state(reranked_docs=[], evidence_quality="none")
+    with patch.object(answer_module, "load_prompt", return_value="无候选提示词") as mock_load:
+        answer_module.step_3_make_prompt(
+            empty_state,
+            empty_state["history"],
+            [],
+            empty_state["item_names"],
+            empty_state["original_query"],
+        )
+    _, empty_kwargs = mock_load.call_args
+    assert "不存在任何 source id" in empty_kwargs["evidence_notice"]
+    assert "不得输出任何 [n] 引用" in empty_kwargs["evidence_notice"]
 
 
 def test_step_4_generate_answer_non_stream():
@@ -176,6 +188,7 @@ def test_step_5_build_sources_rejects_stale_history_citations():
 
     assert state["answer"] == "当前资料中没有足够信息。"
     assert state["sources"] == []
+    assert state["answer_basis"] == "refused"
     mock_set_result.assert_called_once_with(
         state["session_id"],
         "answer",
@@ -191,6 +204,39 @@ def test_step_5_build_sources_keeps_current_citations():
 
     assert state["answer"] == "测量时不要触碰表笔金属部分。[1]"
     assert [source["index"] for source in state["sources"]] == [1]
+    assert state["answer_basis"] == "sources"
+
+
+def test_step_5_build_sources_removes_general_notice_when_citations_exist():
+    state = build_state(
+        answer=f"{answer_module.GENERAL_KNOWLEDGE_NOTICE}\n\n资料结论。[1]",
+        reranked_docs=[
+            {
+                "title": "资料一",
+                "text": "资料结论",
+                "score": 0.9,
+                "type": "milvus",
+                "document_id": "doc-1",
+            }
+        ],
+    )
+
+    answer_module.step_5_build_sources(state, state["reranked_docs"])
+
+    assert state["answer"] == "资料结论。[1]"
+    assert state["answer_basis"] == "sources"
+    assert len(state["sources"]) == 1
+
+
+def test_step_5_build_sources_labels_uncited_general_answer():
+    state = build_state(answer="水在标准大气压下的沸点通常是 100 摄氏度。", reranked_docs=[])
+
+    with patch.object(answer_module, "set_task_result"):
+        answer_module.step_5_build_sources(state, [])
+
+    assert state["answer"].startswith(answer_module.GENERAL_KNOWLEDGE_NOTICE)
+    assert state["sources"] == []
+    assert state["answer_basis"] == "general"
 
 
 def test_node_answer_output_non_stream():
@@ -232,13 +278,15 @@ if __name__ == "__main__":
         test_step_1_without_existing_answer,
         test_step_1_with_existing_answer,
         test_step_2_data_validates,
-        test_step_2_rejects_empty_docs,
+        test_step_2_allows_empty_docs_for_general_knowledge,
         test_step_3_make_prompt,
         test_step_4_generate_answer_non_stream,
         test_step_4_generate_answer_stream,
         test_step_5_filter_answer_images_removes_invalid_image_block,
         test_step_5_build_sources_rejects_stale_history_citations,
         test_step_5_build_sources_keeps_current_citations,
+        test_step_5_build_sources_removes_general_notice_when_citations_exist,
+        test_step_5_build_sources_labels_uncited_general_answer,
         test_node_answer_output_non_stream,
         test_node_answer_output_stream,
     ]

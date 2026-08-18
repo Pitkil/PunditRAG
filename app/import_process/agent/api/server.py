@@ -189,6 +189,10 @@ def invoke_import_graph(
             document_id,
             status="completed",
             chunk_count=len(final_state.get("chunks", [])),
+            content_chars=sum(
+                len(str(chunk.get("content") or ""))
+                for chunk in final_state.get("chunks", [])
+            ),
             file_title=final_state.get("file_title", ""),
         )
         update_task_status(task_id, TASK_STATUS_COMPLETED)

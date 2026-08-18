@@ -131,8 +131,22 @@ def ensure_chat_session(session_id: str, title: str = "新对话") -> Dict[str, 
     return serialize_document(db.chat_session.find_one({"session_id": session_id}))
 
 
-def list_chat_sessions() -> List[Dict[str, Any]]:
-    return [serialize_document(item) for item in _db().chat_session.find().sort("updated_at", -1)]
+def list_chat_sessions(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    cursor = (
+        _db().chat_session.find()
+        .sort("updated_at", -1)
+        .skip(max(0, int(offset)))
+        .limit(max(1, min(int(limit), 100)))
+    )
+    return [serialize_document(item) for item in cursor]
+
+
+def count_chat_sessions() -> int:
+    return _db().chat_session.count_documents({})
+
+
+def get_chat_session(session_id: str) -> Dict[str, Any]:
+    return serialize_document(_db().chat_session.find_one({"session_id": session_id}))
 
 
 def rename_chat_session(session_id: str, title: str) -> Dict[str, Any]:

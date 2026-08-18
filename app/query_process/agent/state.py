@@ -12,6 +12,7 @@ class QueryGraphState(TypedDict):
     scope_mode: str  # all / knowledge_base / documents
     kb_ids: List[str]  # 本轮允许检索的知识库
     document_ids: List[str]  # 本轮明确绑定的文档
+    scope_document_names: List[str]  # 当前显式范围内的文档名，仅用于辅助召回
     enable_web_search: bool  # 是否启用联网搜索
 
     # 检索过程中的中间数据
@@ -27,15 +28,16 @@ class QueryGraphState(TypedDict):
     # 生成过程中的数据
     prompt: str  # 组装好的 Prompt
     answer: str  # 最终生成的答案
+    answer_streamed: bool  # 已在上游节点发送过答案增量，避免重复推送
+    answer_basis: str  # sources / general / refused
     image_urls: list  # 最终答案关联的图片地址
     sources: list  # 最终答案引用来源
 
     # 辅助信息
     item_names: List[str]  # 提取出的商品名称
-    rewritten_query: str  # 改写后的问题
-    query_mode: str  # lookup / explain / summarize / compare / clarify
-    query_depth: str  # brief / normal / deep
-    query_aspects: List[str]  # 深度讲解或比较时需要覆盖的方面
+    rewritten_query: str  # 兼容字段，始终保存用户原问题
+    full_document: bool  # 是否读取当前显式范围的全部正文
+    document_context_complete: bool  # 显式文档完整正文是否已装入回答上下文
     history: list  # 历史对话记录
     is_stream: bool  # 是否流式输出标记
 
@@ -48,6 +50,7 @@ query_graph_default_state: QueryGraphState = {
     "scope_mode": "knowledge_base",
     "kb_ids": [],
     "document_ids": [],
+    "scope_document_names": [],
     "enable_web_search": True,
     "embedding_chunks": [],
     "hyde_embedding_chunks": [],
@@ -57,13 +60,14 @@ query_graph_default_state: QueryGraphState = {
     "evidence_quality": "none",
     "prompt": "",
     "answer": "",
+    "answer_streamed": False,
+    "answer_basis": "",
     "image_urls": [],
     "sources": [],
     "item_names": [],
     "rewritten_query": "",
-    "query_mode": "lookup",
-    "query_depth": "normal",
-    "query_aspects": [],
+    "full_document": False,
+    "document_context_complete": False,
     "history": [],
     "is_stream": False
 }

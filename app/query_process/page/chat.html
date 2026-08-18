@@ -32,7 +32,7 @@
     }
     button, input, textarea, select { font: inherit; }
     button { cursor: pointer; }
-    .app { display: grid; grid-template-columns: 264px minmax(480px, 1fr) 326px; height: 100dvh; overflow: hidden; }
+    .app { display: grid; grid-template-columns: 264px minmax(0, 1fr) 326px; height: 100dvh; overflow: hidden; }
     .app.manage-mode { grid-template-columns: 264px minmax(480px, 1fr); }
     .app.manage-mode .source-panel { display: none; }
     .rail, .source-panel { background: rgba(255, 253, 248, .9); backdrop-filter: blur(18px); }
@@ -53,6 +53,8 @@
     .session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
     .session-menu { opacity: 0; padding: 3px 6px; color: var(--muted); background: transparent; border: 0; }
     .session:hover .session-menu { opacity: 1; }
+    .session-load-more { width: 100%; padding: 9px 10px; color: var(--muted); background: transparent; border: 1px solid var(--line); }
+    .session-load-more:hover { color: var(--ink); background: #ebe8df; }
     .rail-foot { padding: 12px 8px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.6; }
     .service-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; background: #2fa36b; border-radius: 50%; box-shadow: 0 0 0 4px rgba(47, 163, 107, .12); }
 
@@ -61,11 +63,12 @@
     .page-heading { min-width: 0; }
     .page-heading h1 { margin: 0; font-family: Georgia, "Noto Serif SC", serif; font-size: 22px; }
     .page-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-    .top-actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+    .top-actions { min-width: 0; margin-left: auto; display: flex; align-items: center; gap: 9px; }
     .select, .ghost-btn { min-height: 38px; padding: 8px 12px; color: var(--ink); background: rgba(255,255,255,.72); border: 1px solid var(--line); border-radius: 10px; }
+    .ghost-btn { flex: 0 0 auto; white-space: nowrap; }
     #sourceToggle { display: none; }
-    .select { max-width: 190px; }
-    #docSelect { max-width: 230px; }
+    .select { width: 190px; min-width: 0; max-width: 190px; }
+    #docSelect { width: 230px; max-width: 230px; }
     .ghost-btn:hover { border-color: var(--brand); }
     .view { flex: 1; min-height: 0; display: none; }
     .view.active { display: flex; }
@@ -75,7 +78,7 @@
     .messages::-webkit-scrollbar { display: none; }
     .welcome { max-width: 720px; margin: 7vh auto 0; animation: rise .55s ease both; }
     .welcome-kicker { color: var(--brand); font-size: 12px; font-weight: 800; letter-spacing: .18em; }
-    .welcome h2 { max-width: 620px; margin: 14px 0 13px; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(35px, 5vw, 58px); line-height: 1.06; letter-spacing: -.03em; }
+    .welcome h2 { max-width: 620px; margin: 14px 0 13px; font-family: Georgia, "Noto Serif SC", serif; font-size: 46px; line-height: 1.08; letter-spacing: 0; }
     .welcome p { max-width: 580px; color: var(--muted); line-height: 1.8; }
     .suggestions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 30px; }
     .suggestion { padding: 15px; background: rgba(255,253,248,.74); border: 1px solid var(--line); border-radius: 13px; text-align: left; transition: .2s ease; }
@@ -215,6 +218,8 @@
     .source-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
     .source-head h2 { margin: 0; font-family: Georgia, "Noto Serif SC", serif; font-size: 19px; }
     .source-count { color: var(--muted); font-size: 11px; }
+    .source-close { display: none; width: 34px; height: 34px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 8px; font-size: 22px; line-height: 1; }
+    .source-close:hover { color: var(--ink); background: #ebe8df; }
     .source-empty { margin-top: 28vh; color: var(--muted); text-align: center; line-height: 1.8; }
     .source-card { margin-bottom: 11px; padding: 15px; background: var(--surface); border: 1px solid var(--line); border-radius: 13px; cursor: pointer; outline: none; transition: border-color .2s ease, box-shadow .2s ease, background .2s ease; }
     .source-card:hover, .source-card:focus-visible { border-color: var(--brand); box-shadow: 0 8px 18px rgba(39,49,44,.08); }
@@ -250,8 +255,31 @@
     .toast.show { opacity: 1; transform: none; }
     @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
     @keyframes source-pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(233,130,72,.2); } 50% { box-shadow: 0 0 0 7px rgba(233,130,72,.08); } }
-    @media (max-width: 1080px) { .app, .app.manage-mode { grid-template-columns: 230px 1fr; } #sourceToggle { display: inline-block; } .source-panel { position: fixed; right: 0; top: 0; z-index: 12; width: 326px; height: 100vh; transform: translateX(100%); transition: .25s ease; box-shadow: var(--shadow); } .source-panel.open { transform: none; } }
-    @media (max-width: 720px) { body { overflow: auto; } .app { display: block; height: auto; min-height: 100vh; } .rail { position: sticky; top: 0; z-index: 10; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--line); } .brand { padding: 0; } .brand small, .section-label, .session-list, .rail-foot, .new-chat { display: none; } .nav { margin-left: auto; display: flex; } .rail { flex-direction: row; align-items: center; } .nav-btn { width: auto; padding: 9px; } .nav-btn span:last-child { display: none; } .main { height: auto; min-height: calc(100vh - 65px); } .topbar { height: auto; min-height: 68px; padding: 12px 16px; flex-wrap: wrap; } .page-heading p { display: none; } .messages { padding: 20px 14px; } .suggestions, .settings-grid { grid-template-columns: 1fr; } .management { padding: 22px 14px; } .hero-row { align-items: flex-start; flex-direction: column; } .doc-row { grid-template-columns: 1fr auto; } .doc-row > :nth-child(3) { display: none; } .upload-item { grid-template-columns: 1fr; gap: 12px; } .upload-status { justify-self: start; min-width: 0; } .source-panel { width: min(92vw, 350px); } }
+    @media (max-width: 1560px) {
+      .app, .app.manage-mode { grid-template-columns: 230px minmax(0, 1fr); }
+      #sourceToggle { display: inline-block; }
+      .source-panel { position: fixed; right: 0; top: 0; z-index: 12; width: 326px; height: 100vh; transform: translateX(100%); transition: .25s ease; box-shadow: var(--shadow); }
+      .source-panel.open { transform: none; }
+      .source-head { justify-content: flex-start; }
+      .source-count { margin-left: auto; }
+      .source-close { display: grid; place-items: center; margin-left: 7px; }
+    }
+    @media (max-width: 1100px) {
+      .topbar { height: auto; min-height: 112px; padding: 12px 20px; align-items: stretch; flex-direction: column; gap: 10px; }
+      .page-heading p { display: none; }
+      .top-actions { width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(130px, .9fr) minmax(160px, 1.1fr) auto auto; }
+      .select, #docSelect { width: 100%; max-width: none; }
+      .top-actions .ghost-btn { display: inline-flex; align-items: center; justify-content: center; }
+      .welcome h2 { font-size: 40px; }
+    }
+    @media (max-width: 820px) { body { overflow: auto; } .app { display: block; height: auto; min-height: 100vh; } .rail { position: sticky; top: 0; z-index: 10; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--line); } .brand { padding: 0; } .brand small, .section-label, .session-list, .rail-foot, .new-chat { display: none; } .nav { margin-left: auto; display: flex; } .rail { flex-direction: row; align-items: center; } .nav-btn { width: auto; padding: 9px; } .nav-btn span:last-child { display: none; } .main { height: auto; min-height: calc(100vh - 65px); } .messages { padding: 20px 14px; } .suggestions, .settings-grid { grid-template-columns: 1fr; } .management { padding: 22px 14px; } .hero-row { align-items: flex-start; flex-direction: column; } .doc-row { grid-template-columns: 1fr auto; } .doc-row > :nth-child(3) { display: none; } .upload-item { grid-template-columns: 1fr; gap: 12px; } .upload-status { justify-self: start; min-width: 0; } .source-panel { width: min(92vw, 350px); } }
+    @media (max-width: 560px) {
+      .topbar { padding: 11px 14px; }
+      .top-actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      .welcome { margin-top: 4vh; }
+      .welcome h2 { font-size: 34px; }
+      .composer-meta { gap: 10px; flex-direction: column; }
+    }
   </style>
 </head>
 <body>
@@ -329,7 +357,7 @@
       </section>
     </main>
 
-    <aside class="source-panel" id="sourcePanel"><div class="source-head"><h2>引用来源</h2><span class="source-count" id="sourceCount">0 条</span></div><div id="sourceList"><div class="source-empty">完成一次问答后，相关文档、章节和匹配度会显示在这里。</div></div></aside>
+    <aside class="source-panel" id="sourcePanel"><div class="source-head"><h2>引用来源</h2><span class="source-count" id="sourceCount">0 条</span><button class="source-close" id="sourceClose" type="button" title="关闭引用来源" aria-label="关闭引用来源">×</button></div><div id="sourceList"><div class="source-empty">完成一次问答后，相关文档、章节和匹配度会显示在这里。</div></div></aside>
   </div>
 
   <div class="modal-backdrop" id="kbModal"><div class="modal"><h3>新建知识库</h3><div class="field"><label>知识库名称</label><input id="kbName" maxlength="80" placeholder="例如：机器学习课程"></div><div class="field"><label>说明</label><textarea id="kbDescription" rows="3" maxlength="300" placeholder="这组资料主要用于什么？"></textarea></div><div class="modal-actions"><button class="ghost-btn" data-close-modal>取消</button><button class="primary-btn" id="saveKbBtn">创建</button></div></div></div>
@@ -353,7 +381,8 @@
       sessions: [], knowledgeBases: [], documents: [], currentSession: localStorage.getItem("pundit_session") || "",
       selectedKb: localStorage.getItem("pundit_kb_scope") || "",
       selectedDocument: localStorage.getItem("pundit_document_scope") || "",
-      sources: [], busy: false, activeQuery: null, confirmResolve: null
+      sources: [], busy: false, activeQuery: null, confirmResolve: null,
+      sessionOffset: 0, hasMoreSessions: false, loadingSessions: false
     };
     const viewMeta = {
       chat: ["知识问答", "融合私有资料与联网信息，给出可追溯答案。"],
@@ -531,12 +560,19 @@
     async function deleteKnowledgeBase(kbId) { const accepted = await askConfirm({title:"删除知识库", message:"知识库中的文档记录和向量数据都会被永久删除，此操作无法撤销。", confirmText:"删除知识库"}); if (!accepted) return; await request(`${IMPORT_API}/knowledge-bases/${kbId}`, {method:"DELETE"}); state.selectedKb = ""; await loadKnowledgeBases(); const nextKb = state.knowledgeBases[0]?.kb_id; if (nextKb) await selectKnowledgeBase(nextKb); else { $("#documentPanel").dataset.loaded = ""; $("#documentTitle").textContent = "选择一个知识库查看文档"; $("#docList").innerHTML = `<div class="empty">请先新建知识库</div>`; } toast("知识库已删除"); }
     async function deleteDocument(documentId, kbId, filename) { const accepted = await askConfirm({title:"删除文档", message:`确定删除“${filename}”吗？文档记录和已经生成的全部向量数据都会被永久删除。`, confirmText:"确认删除"}); if (!accepted) return; await request(`${IMPORT_API}/documents/${documentId}`, {method:"DELETE"}); await selectKnowledgeBase(kbId); await loadKnowledgeBases(); toast("文档及向量数据已删除"); }
 
+    const SESSION_PAGE_SIZE = 50;
     async function loadSessions() {
-      const data = await request(`${QUERY_API}/sessions`); state.sessions = data.items || [];
-      if (!state.currentSession || !state.sessions.some(item => item.session_id === state.currentSession)) { if (state.sessions[0]) state.currentSession = state.sessions[0].session_id; else await createSession(); }
+      const data = await request(`${QUERY_API}/sessions?limit=${SESSION_PAGE_SIZE}&offset=0`); state.sessions = data.items || [];
+      state.sessionOffset = state.sessions.length; state.hasMoreSessions = Boolean(data.has_more);
+      if (state.currentSession && !state.sessions.some(item => item.session_id === state.currentSession)) {
+        try { const current = await request(`${QUERY_API}/sessions/${encodeURIComponent(state.currentSession)}`); state.sessions.unshift(current); }
+        catch (_) { state.currentSession = ""; }
+      }
+      if (!state.currentSession) { if (state.sessions[0]) state.currentSession = state.sessions[0].session_id; else await createSession(); }
       renderSessions(); await loadHistory();
     }
-    function renderSessions() { $("#sessionList").innerHTML = state.sessions.map(item => `<div class="session ${item.session_id === state.currentSession ? "active" : ""}" data-id="${item.session_id}" role="button" tabindex="0"><span class="session-title">${escapeHtml(item.title)}</span><button class="session-menu" title="删除">×</button></div>`).join(""); $$(".session").forEach(el => { const select = event => { if (!event.target.closest(".session-menu")) chooseSession(el.dataset.id); }; el.addEventListener("click", select); el.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest(".session-menu")) { event.preventDefault(); chooseSession(el.dataset.id); } }); el.querySelector(".session-menu").addEventListener("click", event => { event.stopPropagation(); removeSession(el.dataset.id); }); }); }
+    function renderSessions() { const rows = state.sessions.map(item => `<div class="session ${item.session_id === state.currentSession ? "active" : ""}" data-id="${item.session_id}" role="button" tabindex="0"><span class="session-title">${escapeHtml(item.title)}</span><button class="session-menu" title="删除">×</button></div>`).join(""); const more = state.hasMoreSessions ? `<button class="session-load-more" id="loadMoreSessions" ${state.loadingSessions ? "disabled" : ""}>${state.loadingSessions ? "加载中…" : "加载更多"}</button>` : ""; $("#sessionList").innerHTML = rows + more; $$(".session").forEach(el => { const select = event => { if (!event.target.closest(".session-menu")) chooseSession(el.dataset.id); }; el.addEventListener("click", select); el.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest(".session-menu")) { event.preventDefault(); chooseSession(el.dataset.id); } }); el.querySelector(".session-menu").addEventListener("click", event => { event.stopPropagation(); removeSession(el.dataset.id); }); }); $("#loadMoreSessions")?.addEventListener("click", loadMoreSessions); }
+    async function loadMoreSessions() { if (!state.hasMoreSessions || state.loadingSessions) return; state.loadingSessions = true; renderSessions(); try { const data = await request(`${QUERY_API}/sessions?limit=${SESSION_PAGE_SIZE}&offset=${state.sessionOffset}`); const known = new Set(state.sessions.map(item => item.session_id)); for (const item of data.items || []) if (!known.has(item.session_id)) state.sessions.push(item); state.sessionOffset += (data.items || []).length; state.hasMoreSessions = Boolean(data.has_more); } finally { state.loadingSessions = false; renderSessions(); } }
     async function createSession() { const item = await request(`${QUERY_API}/sessions`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({title:"新对话"})}); state.currentSession = item.session_id; localStorage.setItem("pundit_session", item.session_id); state.sessions.unshift(item); renderSessions(); resetMessages(); return item; }
     async function chooseSession(id) { state.currentSession = id; localStorage.setItem("pundit_session", id); renderSessions(); await loadHistory(); restoreActiveQuery(); switchView("chat"); }
     async function removeSession(id) {
@@ -568,7 +604,7 @@
     function formatDuration(ms) { if (ms == null) return "完成"; return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`; }
     function friendlyError(message = "") { if (message.includes("Repo id must be")) return "本地模型目录为空，系统未能加载向量模型。请重新启动服务，系统会自动使用配置的模型仓库。"; if (message.includes("CUDA") || message.includes("cuda")) return `显卡模型加载失败：${message}`; return message; }
     function scrollMessages() { const box = $("#messages"); requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; }); }
-    function sourceScoreLabel(source) { const score = Number(source.score); const hasScore = source.score !== null && source.score !== undefined && Number.isFinite(score); if (hasScore && !(source.type === "web" && score === 0)) return `${Math.round(score * 100)}%`; if (source.type === "web" && source.search_rank) return `搜索第 ${source.search_rank} 位`; if (source.type === "web" && score === 0) return "未重排"; if (source.type === "web") return `搜索第 ${source.index || "-"} 位`; return "未评分"; }
+    function sourceScoreLabel(source) { const score = Number(source.score); const hasScore = source.score !== null && source.score !== undefined && Number.isFinite(score); if (hasScore && !(source.type === "web" && score === 0)) return `相关度 ${score.toFixed(3)}`; if (source.type === "web" && source.search_rank) return `搜索第 ${source.search_rank} 位`; if (source.type === "web" && score === 0) return "未重排"; if (source.type === "web") return `搜索第 ${source.index || "-"} 位`; return "未重排"; }
     function renderSources(sources) {
       state.sources = sources || [];
       $("#sourceCount").textContent = `${state.sources.length} 条`;
@@ -612,7 +648,7 @@
       finally { state.busy = false; state.activeQuery = null; $("#sendBtn").disabled = false; input.focus(); }
     }
     function consumeStream(runId) { return new Promise((resolve, reject) => { const es = new EventSource(`${QUERY_API}/query/stream/${runId}`); let closed = false, pendingText = "", renderTimer = null; const active = () => state.activeQuery; const isVisible = () => active()?.conversationId === state.currentSession; const flushText = () => { renderTimer = null; const task = active(); if (!task || !pendingText) return; task.answer += pendingText; pendingText = ""; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; scrollMessages(); } }; const enqueueText = text => { pendingText += text || ""; if (!renderTimer) renderTimer = requestAnimationFrame(flushText); }; const finish = () => { if (closed) return; flushText(); closed = true; es.close(); resolve(); }; es.addEventListener("delta", event => { const data = JSON.parse(event.data); enqueueText(data.delta || ""); }); es.addEventListener("progress", event => { const data = JSON.parse(event.data); const task = active(); if (!task) return; task.trace = data.trace || []; if (isVisible() && task.progressEl?.isConnected) renderTrace(task.progressEl, task.trace); }); es.addEventListener("final", event => { const data = JSON.parse(event.data); flushText(); const task = active(); if (task) { task.answer = data.answer ?? task.answer; task.imageUrls = data.image_urls || []; } if (task && isVisible() && task.answerEl?.isConnected) { const message = task.answerEl.closest(".message"); if (message) message.sourceRecords = data.sources || []; renderAnswer(task.answerEl, task.answer, data.sources || []); renderAnswerImages(task.answerEl.closest(".bubble")?.querySelector(".answer-images"), task.imageUrls); renderTrace(task.progressEl, task.trace.map(step => ({...step, status:"completed"}))); renderSources(data.sources || []); } finish(); }); es.addEventListener("error", event => { const task = active(); try { const data = JSON.parse(event.data); if (task) { task.error = data.error || "未知错误"; task.answer = "本次处理未完成。"; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; renderTrace(task.progressEl, task.trace, task.error); } } } catch (_) { if (task && !task.answer) task.answer = "连接中断，请检查后端日志。"; } finish(); }); es.onerror = () => { const task = active(); if (!closed && task?.answer) finish(); else if (!closed) { es.close(); reject(new Error("SSE 连接中断")); } }; }); }
-    async function loadSessionsSilently(query) { const data = await request(`${QUERY_API}/sessions`); state.sessions = data.items || []; renderSessions(); }
+    async function loadSessionsSilently(query) { const data = await request(`${QUERY_API}/sessions?limit=${SESSION_PAGE_SIZE}&offset=0`); state.sessions = data.items || []; state.sessionOffset = state.sessions.length; state.hasMoreSessions = Boolean(data.has_more); renderSessions(); }
 
     async function uploadFiles(files) { const valid = [...files].filter(file => /\.(pdf|md|txt|docx|pptx|xlsx|csv|html?|json)$/i.test(file.name)); if (!valid.length) return toast("请选择受支持的文档文件"); const kbId = $("#uploadKbSelect").value; if (!kbId) return toast("请先创建知识库"); for (const file of valid) uploadOne(file, kbId); }
     async function uploadOne(file, kbId) {
@@ -691,6 +727,7 @@
     $("#sendBtn").addEventListener("click", sendQuery);
     $("#queryInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendQuery(); } });
     $("#sourceToggle").addEventListener("click", () => $("#sourcePanel").classList.toggle("open"));
+    $("#sourceClose").addEventListener("click", () => $("#sourcePanel").classList.remove("open"));
     $("#messages").addEventListener("click", event => { const citation = event.target.closest(".citation-link"); if (!citation) return; event.preventDefault(); const messageSources = citation.closest(".message")?.sourceRecords || []; if (messageSources.length) renderSources(messageSources); focusSource(citation.dataset.sourceIndex); });
     $("#createKbBtn").addEventListener("click", () => $("#kbModal").classList.add("open"));
     $$('[data-close-modal]').forEach(btn => btn.addEventListener("click", () => $("#kbModal").classList.remove("open")));

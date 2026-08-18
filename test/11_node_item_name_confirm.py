@@ -26,7 +26,7 @@ if __name__ == "__main__":
         result_state = node_item_name_confirm(test_state)
         history_messages = get_recent_messages(session_id)
 
-        assert result_state["rewritten_query"], "改写后的问题不能为空"
+        assert result_state["rewritten_query"] == test_state["original_query"], "兼容字段必须保留用户原问题"
         assert isinstance(result_state["item_names"], list), "item_names 必须是列表"
         assert len(history_messages) == 1, "本次用户问题应保存一条 MongoDB 记录"
         assert history_messages[0]["text"] == test_state["original_query"]
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
         logger.info("=== 主题识别与资料范围确认节点测试通过 ===")
         logger.info(f"原始问题：{result_state['original_query']}")
-        logger.info(f"改写问题：{result_state['rewritten_query']}")
+        logger.info(f"原始问题：{result_state['rewritten_query']}")
         logger.info(f"匹配主题或实体：{result_state['item_names']}")
         logger.info(f"节点回复：{result_state['answer'] or '无，继续执行后续检索'}")
     finally:

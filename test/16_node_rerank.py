@@ -78,6 +78,7 @@ def test_step_2_merged_rrf_and_mcp():
 
 def test_step_3_rerank_score_and_sort():
     state = build_state()
+    state["scope_document_names"] = ["不应加入重排问题.pdf"]
     rrf_chunks, web_search_docs = node_rerank_module.step_1_data_validates(state)
     final_list = node_rerank_module.step_2_merged_rrf_and_mcp(rrf_chunks, web_search_docs)
 
@@ -96,6 +97,20 @@ def test_step_3_rerank_score_and_sort():
     fake_reranker.compute_score.assert_called_once()
     _, kwargs = fake_reranker.compute_score.call_args
     assert kwargs.get("normalize") is True
+    assert all(pair[0] == state["original_query"] for pair in fake_reranker.compute_score.call_args.args[0])
+    assert all("文档：万用表RS-12的使用" in pair[1] for pair in fake_reranker.compute_score.call_args.args[0][:3])
+    assert "章节：RS-12数字万用表使用说明" in fake_reranker.compute_score.call_args.args[0][0][1]
+
+
+def test_step_2_limits_local_rerank_input_but_keeps_web_results():
+    local_docs = [{"type": "milvus", "text": str(index)} for index in range(30)]
+    web_docs = [{"type": "web", "text": "web-1"}, {"type": "web", "text": "web-2"}]
+    result = node_rerank_module.step_2_limit_rerank_candidates(
+        local_docs + web_docs,
+    )
+
+    assert len([item for item in result if item["type"] == "milvus"]) == node_rerank_module.RERANK_INPUT_TOPK
+    assert result[-2:] == web_docs
 
 
 def test_step_4_chunk_topk_no_gap():
@@ -124,7 +139,7 @@ def test_low_score_candidates_reach_answer_model_as_fallback():
     """低于阈值不等于没有资料，回答模型仍应获得少量候选用于核验。"""
     state = build_state()
     fake_reranker = MagicMock()
-    fake_reranker.compute_score.return_value = [0.04, 0.03, 0.02, 0.01, 0.005]
+    fake_reranker.compute_score.return_value = [0.04, 0.03, 0.02, 0.01, 0.0]
 
     with (
         patch.object(node_rerank_module, "get_reranker_model", return_value=fake_reranker),
@@ -135,9 +150,9 @@ def test_low_score_candidates_reach_answer_model_as_fallback():
 
     assert result_state["answer"] == ""
     assert result_state["evidence_quality"] == "low"
-    assert len(result_state["reranked_docs"]) == node_rerank_module.RERANK_FALLBACK_TOPK
+    assert len(result_state["reranked_docs"]) == 4
     assert all(chunk.get("low_confidence") is True for chunk in result_state["reranked_docs"])
-    assert [chunk["score"] for chunk in result_state["reranked_docs"]] == [0.04, 0.03, 0.02]
+    assert [chunk["score"] for chunk in result_state["reranked_docs"]] == [0.04, 0.03, 0.02, 0.01]
 
 
 def test_node_rerank_full():
@@ -161,6 +176,7 @@ if __name__ == "__main__":
         test_step_1_data_validates,
         test_step_2_merged_rrf_and_mcp,
         test_step_3_rerank_score_and_sort,
+        test_step_2_limits_local_rerank_input_but_keeps_web_results,
         test_step_4_chunk_topk_no_gap,
         test_step_4_chunk_topk_with_gap,
         test_step_4_keeps_secondary_evidence_above_min_score,
