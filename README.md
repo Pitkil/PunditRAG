@@ -1,20 +1,49 @@
+<div align="center">
+
 # PunditRAG
+
+**面向中文技术资料的可追溯 RAG 知识库系统**
+
+从文档导入、混合检索和精排，到流式回答、引用治理与可复现评测的一体化工程实现。
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-1C3C3C)](https://github.com/langchain-ai/langgraph)
 [![CI](https://github.com/Pitkil/PunditRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Pitkil/PunditRAG/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-面向中文技术资料的可追溯 RAG 知识库系统。PunditRAG 将文档解析、结构化切分、混合检索、HyDE、RRF、重排、引用生成和可复现评测串成一条完整链路，并提供可直接使用的知识库工作台与 REST API。
+[快速开始](#快速开始) · [系统架构](#系统架构) · [对话流程](#对话处理过程) · [评测结果](#评测结果) · [API](#api-概览)
 
-> 当前重点是区分“资料事实”和“模型通识”：来自知识库的型号、编号、数值和日期必须由真实引用支持；资料不足时仍可回答，但必须明确标识为无资料引用的 AI 通识内容。
+</div>
+
+PunditRAG 面向需要“导入资料后直接提问”的实际使用场景。来自知识库的型号、编号、数值和日期必须由真实引用支持；资料不足时仍可使用模型通识回答，但会明确显示“AI 通识回答”，不伪造资料来源。
+
+## 项目一览
+
+```mermaid
+flowchart LR
+    D[PDF / Markdown / Office / 文本] --> P[解析与结构化切分]
+    P --> E[BGE-M3 Dense / Sparse]
+    E --> R[原问题与 HyDE 召回]
+    R --> F[RRF 融合与多语言重排]
+    F --> A[证据约束回答与引用治理]
+    A --> U[知识库工作台 / REST API]
+```
+
+## 界面预览
+
+![PunditRAG 知识问答工作台：文档范围、引用回答与来源原文](docs/assets/punditrag-workbench.png)
+
+工作台将知识库与文档范围、回答正文、引用编号和来源原文放在同一界面，并提供单条消息删除、聊天记录清空和联网补充开关。
 
 ## 目录
 
+- [项目一览](#项目一览)
+- [界面预览](#界面预览)
+- [快速开始](#快速开始)
 - [核心能力](#核心能力)
 - [系统架构](#系统架构)
 - [对话处理过程](#对话处理过程)
-- [快速开始](#快速开始)
+- [部署说明](#部署说明)
 - [配置说明](#配置说明)
 - [使用方式](#使用方式)
 - [API 概览](#api-概览)
@@ -26,7 +55,37 @@
 - [参与贡献](#参与贡献)
 - [许可证](#许可证)
 
+## 快速开始
+
+准备 Docker Desktop 后，复制环境变量模板并填写模型、MinerU、MongoDB 和 MinIO 的凭据：
+
+```powershell
+Copy-Item .env.docker.example .env.docker
+notepad .env.docker
+```
+
+启动全部服务：
+
+```powershell
+.\start.ps1
+```
+
+首次启动会自动构建应用镜像并下载 Embedding 与 Reranker 模型；后续启动会直接复用现有镜像。服务就绪后打开知识库工作台：<http://127.0.0.1:8001/query/html>。
+
+完整的 GPU/CPU 要求、手动 Compose 命令、服务地址和日志操作见[部署说明](#部署说明)。
+
 ## 核心能力
+
+| 能力 | 实现 |
+|---|---|
+| 多格式知识入库 | PDF、Markdown、Office、文本与表格统一转换为结构化 Markdown，并保留章节和图片上下文 |
+| 自适应文档上下文 | 短文档完整直读；长文档混合检索后补齐同章节相邻切片；整份总结使用 Map/Reduce |
+| 多路检索与精排 | 原问题与 HyDE 并行执行 Dense + Sparse 召回，经 RRF 融合和多语言 Reranker 精排 |
+| 可追溯回答 | 资料事实使用连续 `[n]` 引用；无证据时允许明确标识的 AI 通识回答；越界引用直接拦截 |
+| 可用工作台 | 管理知识库、文档和会话，观察执行过程，流式接收答案，删除单条消息或清空聊天记录 |
+
+<details>
+<summary><strong>展开查看完整能力清单</strong></summary>
 
 ### 文档导入
 
@@ -64,6 +123,8 @@
 - MongoDB、Milvus、MinIO 真实依赖健康检查。
 - 文档删除时同步清理向量、对象存储、本地文件和元数据。
 - 自建集及 RGB、CRUD-RAG、MTRAG 评测适配器。
+
+</details>
 
 ## 系统架构
 
@@ -123,6 +184,9 @@ flowchart TB
     QA -->|JSON / SSE| U
 ```
 
+<details>
+<summary><strong>展开查看：导入架构每条箭头的含义</strong></summary>
+
 ### 导入链路箭头说明
 
 | 箭头 | 传递内容 | 作用 |
@@ -143,6 +207,11 @@ flowchart TB
 | 文档主题识别 → Milvus | 主题名称的 Dense/Sparse 向量 | 建立资料主题索引，用于查询阶段的召回扩展。 |
 | 文档主题识别 → BGE-M3 Embedding | 带文档名、章节名和主题的切片 | 为切片补足上下文后批量生成向量。 |
 | BGE-M3 Embedding → Milvus | 切片正文、元数据、Dense/Sparse 向量 | 写入知识库切片集合，作为本地混合检索的数据源。 |
+
+</details>
+
+<details>
+<summary><strong>展开查看：查询架构每条箭头的含义</strong></summary>
 
 ### 查询链路箭头说明
 
@@ -177,6 +246,8 @@ flowchart TB
 | 证据约束回答 → 请求校验与运行状态 | 答案、来源、图片、消息 ID、任务轨迹 | 非流式请求形成完整 JSON；流式请求形成 `delta` 与 `final` 事件，最终事件携带本轮用户和助手消息 ID。 |
 | 请求校验与运行状态 → 客户端 | JSON 或 SSE | 将最终结果和执行状态返回工作台或 API 调用方。 |
 
+</details>
+
 普通问答主链路：
 
 ```text
@@ -186,6 +257,10 @@ flowchart TB
 ## 对话处理过程
 
 一次对话同时使用两个标识：`session_id` 表示可持续多轮的会话，负责关联历史消息；`run_id` 表示单次请求，负责隔离任务状态、节点追踪和 SSE 事件。即使同一会话连续发起查询，每轮也有独立的 `run_id`。
+
+![PunditRAG 普通问答的七步执行过程与节点耗时](docs/assets/punditrag-trace.png)
+
+工作台通过 SSE 实时更新本轮执行过程；图中展示的是一次普通文档问答实际经过的主题确认、文档上下文准备、原问题与 HyDE 检索、RRF 融合、重排序和答案生成。
 
 ```mermaid
 sequenceDiagram
@@ -228,6 +303,9 @@ sequenceDiagram
     A-->>U: JSON 或 SSE final 事件
 ```
 
+<details>
+<summary><strong>展开查看：一次请求的 13 个处理步骤</strong></summary>
+
 具体处理顺序如下：
 
 1. **请求校验**：`POST /query` 校验问题非空，并按 `scope_mode` 解析范围。`all` 解析当前全部知识库，`knowledge_base` 校验 `kb_ids`，`documents` 校验 `document_ids` 并反查所属知识库；未知 ID 返回 `404`。未提供 `session_id` 时自动创建，随后为本轮生成新的 `run_id`。
@@ -243,6 +321,11 @@ sequenceDiagram
 11. **输出后处理**：引用了本轮不存在的编号时拒绝整份答案；没有引用时允许通识回答并显示明确标识；有效引用按首次出现顺序压缩为连续编号。图片 URL 必须存在于候选白名单。
 12. **持久化与返回**：用户消息和助手消息分别写入 MongoDB，并把各自消息 ID 放入非流式响应或流式 `final` 事件。工作台据此精确删除单条记录；清空操作只删除当前会话的消息，不删除会话本身。
 13. **失败隔离**：节点异常会把本轮任务标记为 `failed`，记录错误并在流式模式发送 `error` 事件。同一会话正在生成时，删除会话、删除消息和清空记录均返回 `409`。
+
+</details>
+
+<details>
+<summary><strong>展开查看：不同使用场景的实际行为</strong></summary>
 
 主要分支行为：
 
@@ -263,6 +346,11 @@ sequenceDiagram
 | 已召回但得分低 | 非零低分候选交给回答模型核验；`0.0` 候选视为完全无关并丢弃 |
 | 全部召回为空 | 回答模型基于稳定通识回答，不生成资料引用 |
 
+</details>
+
+<details>
+<summary><strong>展开查看：“给我详细讲解这篇论文”如何执行</strong></summary>
+
 以“给我详细讲解这篇论文”为例：
 
 1. 如果工作台已经选中论文，API 会把论文的 `document_id` 写入本轮显式范围；系统不会从“这篇”两个字猜文档。
@@ -274,7 +362,9 @@ sequenceDiagram
 
 只有“总结整篇论文”“概括全文”这类明确要求完整覆盖的请求才设置 `full_document=true` 并进入全文综合；系统不再维护查询模式、深度或关注方面。
 
-## 快速开始
+</details>
+
+## 部署说明
 
 ### 环境要求
 
