@@ -36,12 +36,12 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "node_item_name_recognition": "主体名称识别",
     "node_document_split": "文档切分",
     "node_bge_embedding": "向量生成",
-    "node_import_kg": "导入知识图谱",
     "node_import_milvus": "导入向量库",
     "__end__": "处理完成",
     "END": "处理完成",
     # --- Query 流程节点（kb/query_process/main_graph.py）---
     "node_item_name_confirm": "确认检索主题",
+    "node_document_context": "准备文档上下文",
     "node_answer_output": "生成答案",
     "node_rerank": "重排序",
     "node_rrf": "倒排融合",
@@ -49,9 +49,6 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "node_search_embedding": "切片搜索",
     "node_search_embedding_hyde": "切片搜索(假设性文档)",
     "node_document_summary": "整份资料分层摘要",
-    "node_multi_search": "多路搜索",
-    "node_query_kg": "查询知识图谱",
-    "node_join": "多路搜索合并",
 }
 
 
