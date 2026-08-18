@@ -22,7 +22,7 @@ from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
 from app.llm.embedding_utils import generate_embeddings
 from app.llm.llm_util import get_llm_client
-from app.utils.task_utils import add_done_task, add_running_task
+from app.utils.task_utils import add_done_task, add_running_task, set_task_result
 
 
 PLANNER_TIMEOUT_SECONDS = float(os.getenv("PLANNER_TIMEOUT_SECONDS", "10"))
@@ -266,7 +266,7 @@ def step_6_deal_state(state, final_result, query_plan):
 @step_log("step_7_save_user_chat_message")
 def step_7_save_user_chat_message(state):
     """保存本次用户问题及查询理解结果。"""
-    save_chat_message(
+    message_id = save_chat_message(
         session_id=state["session_id"],
         role="user",
         text=state["original_query"],
@@ -275,6 +275,13 @@ def step_7_save_user_chat_message(state):
         kb_ids=state.get("kb_ids", []),
         document_ids=state.get("document_ids", []),
     )
+    state["user_message_id"] = message_id
+    set_task_result(
+        state.get("run_id") or state["session_id"],
+        "user_message_id",
+        message_id,
+    )
+    return message_id
 
 @node_log("node_item_name_confirm")
 def node_item_name_confirm(state):

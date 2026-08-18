@@ -32,6 +32,8 @@ class QueryGraphState(TypedDict):
     answer_basis: str  # sources / general / refused
     image_urls: list  # 最终答案关联的图片地址
     sources: list  # 最终答案引用来源
+    user_message_id: str  # 本轮用户消息的 MongoDB ID
+    assistant_message_id: str  # 本轮助手消息的 MongoDB ID
 
     # 辅助信息
     item_names: List[str]  # 提取出的商品名称
@@ -64,6 +66,8 @@ query_graph_default_state: QueryGraphState = {
     "answer_basis": "",
     "image_urls": [],
     "sources": [],
+    "user_message_id": "",
+    "assistant_message_id": "",
     "item_names": [],
     "rewritten_query": "",
     "full_document": False,

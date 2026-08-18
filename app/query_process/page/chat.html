@@ -67,6 +67,8 @@
     .select, .ghost-btn { min-height: 38px; padding: 8px 12px; color: var(--ink); background: rgba(255,255,255,.72); border: 1px solid var(--line); border-radius: 10px; }
     .ghost-btn { flex: 0 0 auto; white-space: nowrap; }
     #sourceToggle { display: none; }
+    #clearHistoryBtn { color: var(--danger); }
+    #clearHistoryBtn:hover { color: white; background: var(--danger); border-color: var(--danger); }
     .select { width: 190px; min-width: 0; max-width: 190px; }
     #docSelect { width: 230px; max-width: 230px; }
     .ghost-btn:hover { border-color: var(--brand); }
@@ -83,8 +85,12 @@
     .suggestions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 30px; }
     .suggestion { padding: 15px; background: rgba(255,253,248,.74); border: 1px solid var(--line); border-radius: 13px; text-align: left; transition: .2s ease; }
     .suggestion:hover { transform: translateY(-2px); border-color: var(--brand); box-shadow: 0 10px 25px rgba(39,49,44,.08); }
-    .message { width: min(100%, 820px); margin: 0 auto 26px; animation: rise .25s ease both; }
+    .message { position: relative; width: min(100%, 820px); margin: 0 auto 26px; animation: rise .25s ease both; }
     .message.user { display: flex; justify-content: flex-end; }
+    .message-delete { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; color: #8d9490; background: transparent; border: 1px solid transparent; border-radius: 8px; font-size: 19px; line-height: 1; opacity: .55; transition: .18s ease; }
+    .message-delete:hover, .message-delete:focus-visible { color: white; background: var(--danger); border-color: var(--danger); opacity: 1; outline: none; }
+    .message.user .message-delete { flex: 0 0 auto; align-self: center; margin-right: 8px; }
+    .message.assistant .message-delete { position: absolute; top: 0; right: 8px; z-index: 1; }
     .bubble { max-width: min(76%, 620px); padding: 13px 17px; background: var(--surface); border: 1px solid var(--line); border-radius: 5px 16px 16px 16px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
     .user .bubble { color: white; background: var(--brand-dark); border-color: var(--brand-dark); border-radius: 16px 5px 16px 16px; }
     .assistant .bubble { max-width: 100%; padding: 21px 24px 23px; border-left: 3px solid var(--brand); border-radius: 4px 17px 17px 17px; box-shadow: 0 10px 30px rgba(39,49,44,.055); }
@@ -267,7 +273,7 @@
     @media (max-width: 1100px) {
       .topbar { height: auto; min-height: 112px; padding: 12px 20px; align-items: stretch; flex-direction: column; gap: 10px; }
       .page-heading p { display: none; }
-      .top-actions { width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(130px, .9fr) minmax(160px, 1.1fr) auto auto; }
+      .top-actions { width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(130px, .9fr) minmax(160px, 1.1fr) repeat(3, auto); }
       .select, #docSelect { width: 100%; max-width: none; }
       .top-actions .ghost-btn { display: inline-flex; align-items: center; justify-content: center; }
       .welcome h2 { font-size: 40px; }
@@ -305,6 +311,7 @@
           <select class="select" id="kbSelect" title="选择知识库"></select>
           <select class="select" id="docSelect" title="选择文档范围"></select>
           <label class="ghost-btn"><input type="checkbox" id="webSearch"> 联网补充</label>
+          <button class="ghost-btn" id="clearHistoryBtn" type="button">清空记录</button>
           <button class="ghost-btn" id="sourceToggle">引用来源</button>
         </div>
       </header>
@@ -588,18 +595,48 @@
       toast("对话已删除");
     }
     function resetMessages() { $("#messages").innerHTML = `<div class="welcome" id="welcome"><div class="welcome-kicker">PRIVATE KNOWLEDGE, CLEAR ANSWERS</div><h2>从你的资料里，找到真正有依据的答案。</h2><p>PunditRAG 会同时进行语义检索、HyDE 召回、融合与重排序，并将使用过的资料清楚列在右侧。</p><div class="suggestions"><button class="suggestion">概括当前知识库的核心内容</button><button class="suggestion">根据资料整理一份学习提纲</button></div></div>`; bindSuggestions(); renderSources([]); }
-    async function loadHistory() { if (!state.currentSession) return; const data = await request(`${QUERY_API}/history/${state.currentSession}?limit=100`); const messages = data.messages || []; if (!messages.length) { resetMessages(); return; } $("#messages").innerHTML = ""; messages.forEach(msg => addMessage(msg.role, msg.text, null, msg.sources || [], msg.image_urls || [])); const lastAssistant = [...messages].reverse().find(msg => msg.role === "assistant"); renderSources(lastAssistant?.sources || []); scrollMessages(); }
+    async function loadHistory() { if (!state.currentSession) return; const data = await request(`${QUERY_API}/history/${state.currentSession}?limit=100`); const messages = data.messages || []; if (!messages.length) { resetMessages(); return; } $("#messages").innerHTML = ""; messages.forEach(msg => addMessage(msg.role, msg.text, null, msg.sources || [], msg.image_urls || [], msg._id)); const lastAssistant = [...messages].reverse().find(msg => msg.role === "assistant"); renderSources(lastAssistant?.sources || []); scrollMessages(); }
 
     function restoreActiveQuery() {
       const active = state.activeQuery;
       if (!state.busy || !active || active.conversationId !== state.currentSession) return;
       const assistant = addMessage("assistant", active.answer, "正在继续处理…", [], active.imageUrls || []);
+      active.assistantEl = assistant;
       active.answerEl = assistant.querySelector(".answer-text");
       active.progressEl = assistant.querySelector(".progress");
       renderTrace(active.progressEl, active.trace, active.error);
     }
 
-    function addMessage(role, text = "", progress = null, sources = [], imageUrls = []) { const el = document.createElement("article"); el.className = `message ${role}`; el.innerHTML = role === "assistant" ? `<div class="assistant-label">PUNDITRAG</div><div class="bubble"><div class="answer-text"></div><div class="answer-images"></div>${progress ? `<div class="progress"><details class="trace-box" open><summary>执行过程</summary><div class="trace-list"><div class="trace-step running"><span class="trace-dot">·</span><span>${escapeHtml(progress)}</span><span class="trace-time">进行中</span></div></div></details></div>` : ""}</div>` : `<div class="bubble">${escapeHtml(text)}</div>`; el.sourceRecords = sources || []; $("#messages").appendChild(el); if (role === "assistant") { renderAnswer(el.querySelector(".answer-text"), text, sources); renderAnswerImages(el.querySelector(".answer-images"), imageUrls); } if (sources.length) renderSources(sources); scrollMessages(); return el; }
+    function messageDeleteButton(messageId = "") { return `<button class="message-delete" type="button" data-message-id="${escapeHtml(messageId)}" title="删除这条消息" aria-label="删除这条消息">×</button>`; }
+    function setMessageIdentity(messageEl, messageId = "") { if (!messageEl || !messageId) return; messageEl.dataset.messageId = messageId; const button = messageEl.querySelector(".message-delete"); if (button) button.dataset.messageId = messageId; }
+    function addMessage(role, text = "", progress = null, sources = [], imageUrls = [], messageId = "") { const el = document.createElement("article"); el.className = `message ${role}`; el.dataset.messageId = messageId || ""; el.innerHTML = role === "assistant" ? `${messageDeleteButton(messageId)}<div class="assistant-label">PUNDITRAG</div><div class="bubble"><div class="answer-text"></div><div class="answer-images"></div>${progress ? `<div class="progress"><details class="trace-box" open><summary>执行过程</summary><div class="trace-list"><div class="trace-step running"><span class="trace-dot">·</span><span>${escapeHtml(progress)}</span><span class="trace-time">进行中</span></div></div></details></div>` : ""}</div>` : `${messageDeleteButton(messageId)}<div class="bubble">${escapeHtml(text)}</div>`; el.sourceRecords = sources || []; $("#messages").appendChild(el); if (role === "assistant") { renderAnswer(el.querySelector(".answer-text"), text, sources); renderAnswerImages(el.querySelector(".answer-images"), imageUrls); } if (sources.length) renderSources(sources); scrollMessages(); return el; }
+    async function deleteMessage(messageEl) {
+      if (!messageEl) return;
+      if (state.busy && state.activeQuery?.conversationId === state.currentSession) { toast("当前对话正在生成答案，完成后才能删除消息"); return; }
+      const roleName = messageEl.classList.contains("user") ? "用户消息" : "助手消息";
+      const accepted = await askConfirm({title:"删除单条消息", message:`确定删除这条${roleName}吗？删除后不会再作为后续对话上下文。`, confirmText:"删除消息"});
+      if (!accepted) return;
+      const messageId = messageEl.dataset.messageId;
+      if (messageId) {
+        await request(`${QUERY_API}/history/${encodeURIComponent(state.currentSession)}/messages/${encodeURIComponent(messageId)}`, {method:"DELETE"});
+        await loadHistory();
+      } else {
+        messageEl.remove();
+        const lastAssistant = [...$$(".message.assistant")].at(-1);
+        renderSources(lastAssistant?.sourceRecords || []);
+        if (!$(".message")) resetMessages();
+      }
+      toast("消息已删除");
+    }
+    async function clearCurrentHistory() {
+      if (!state.currentSession) return;
+      if (state.busy && state.activeQuery?.conversationId === state.currentSession) { toast("当前对话正在生成答案，完成后才能清空记录"); return; }
+      const accepted = await askConfirm({title:"清空聊天记录", message:"当前对话中的全部用户消息、助手回答和引用记录都会被永久删除，但对话本身会保留。", confirmText:"全部清空"});
+      if (!accepted) return;
+      const result = await request(`${QUERY_API}/history/${encodeURIComponent(state.currentSession)}`, {method:"DELETE"});
+      resetMessages();
+      toast(result.deleted_count ? `已清空 ${result.deleted_count} 条消息` : "当前对话没有聊天记录");
+    }
     function renderTrace(progressEl, trace = [], error = "") { if (!progressEl) return; const steps = trace.map(step => `<div class="trace-step ${step.status}"><span class="trace-dot">${step.status === "completed" ? "✓" : "·"}</span><span>${escapeHtml(step.label)}</span><span class="trace-time">${step.status === "running" ? "进行中" : formatDuration(step.duration_ms)}</span></div>`).join(""); progressEl.innerHTML = `<details class="trace-box" open><summary>执行过程 · ${trace.filter(step => step.status === "completed").length}/${trace.length || 1}</summary><div class="trace-list">${steps || `<div class="trace-step running"><span class="trace-dot">·</span><span>正在准备任务</span><span class="trace-time">进行中</span></div>`}</div>${error ? `<div class="trace-error">${escapeHtml(friendlyError(error))}</div>` : ""}</details>`; }
     function formatDuration(ms) { if (ms == null) return "完成"; return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`; }
     function friendlyError(message = "") { if (message.includes("Repo id must be")) return "本地模型目录为空，系统未能加载向量模型。请重新启动服务，系统会自动使用配置的模型仓库。"; if (message.includes("CUDA") || message.includes("cuda")) return `显卡模型加载失败：${message}`; return message; }
@@ -636,9 +673,9 @@
     async function sendQuery() {
       const input = $("#queryInput"), query = input.value.trim(); if (!query || state.busy) return;
       const querySessionId = state.currentSession;
-      state.busy = true; $("#sendBtn").disabled = true; input.value = ""; $("#welcome")?.remove(); addMessage("user", query);
+      state.busy = true; $("#sendBtn").disabled = true; input.value = ""; $("#welcome")?.remove(); const userMessage = addMessage("user", query);
       const assistant = addMessage("assistant", "", "正在理解问题…"); const answerEl = assistant.querySelector(".answer-text"), progressEl = assistant.querySelector(".progress");
-      state.activeQuery = {conversationId: querySessionId, runId: "", answer: "", imageUrls: [], trace: [], error: "", answerEl, progressEl};
+      state.activeQuery = {conversationId: querySessionId, runId: "", answer: "", imageUrls: [], trace: [], error: "", userEl:userMessage, assistantEl:assistant, answerEl, progressEl};
       try {
         const start = await request(`${QUERY_API}/query`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({query, session_id:querySessionId, ...currentQueryScope(), is_stream:true, enable_web_search:$("#webSearch").checked})});
         state.activeQuery.runId = start.run_id;
@@ -647,7 +684,7 @@
       } catch (error) { const active = state.activeQuery; if (active) { active.error = error.message; active.answerEl.textContent = `请求失败：${error.message}`; active.progressEl.textContent = ""; } }
       finally { state.busy = false; state.activeQuery = null; $("#sendBtn").disabled = false; input.focus(); }
     }
-    function consumeStream(runId) { return new Promise((resolve, reject) => { const es = new EventSource(`${QUERY_API}/query/stream/${runId}`); let closed = false, pendingText = "", renderTimer = null; const active = () => state.activeQuery; const isVisible = () => active()?.conversationId === state.currentSession; const flushText = () => { renderTimer = null; const task = active(); if (!task || !pendingText) return; task.answer += pendingText; pendingText = ""; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; scrollMessages(); } }; const enqueueText = text => { pendingText += text || ""; if (!renderTimer) renderTimer = requestAnimationFrame(flushText); }; const finish = () => { if (closed) return; flushText(); closed = true; es.close(); resolve(); }; es.addEventListener("delta", event => { const data = JSON.parse(event.data); enqueueText(data.delta || ""); }); es.addEventListener("progress", event => { const data = JSON.parse(event.data); const task = active(); if (!task) return; task.trace = data.trace || []; if (isVisible() && task.progressEl?.isConnected) renderTrace(task.progressEl, task.trace); }); es.addEventListener("final", event => { const data = JSON.parse(event.data); flushText(); const task = active(); if (task) { task.answer = data.answer ?? task.answer; task.imageUrls = data.image_urls || []; } if (task && isVisible() && task.answerEl?.isConnected) { const message = task.answerEl.closest(".message"); if (message) message.sourceRecords = data.sources || []; renderAnswer(task.answerEl, task.answer, data.sources || []); renderAnswerImages(task.answerEl.closest(".bubble")?.querySelector(".answer-images"), task.imageUrls); renderTrace(task.progressEl, task.trace.map(step => ({...step, status:"completed"}))); renderSources(data.sources || []); } finish(); }); es.addEventListener("error", event => { const task = active(); try { const data = JSON.parse(event.data); if (task) { task.error = data.error || "未知错误"; task.answer = "本次处理未完成。"; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; renderTrace(task.progressEl, task.trace, task.error); } } } catch (_) { if (task && !task.answer) task.answer = "连接中断，请检查后端日志。"; } finish(); }); es.onerror = () => { const task = active(); if (!closed && task?.answer) finish(); else if (!closed) { es.close(); reject(new Error("SSE 连接中断")); } }; }); }
+    function consumeStream(runId) { return new Promise((resolve, reject) => { const es = new EventSource(`${QUERY_API}/query/stream/${runId}`); let closed = false, pendingText = "", renderTimer = null; const active = () => state.activeQuery; const isVisible = () => active()?.conversationId === state.currentSession; const applyMessageIds = data => { const task = active(); if (!task) return; setMessageIdentity(task.userEl, data.user_message_id || ""); setMessageIdentity(task.assistantEl, data.assistant_message_id || ""); }; const flushText = () => { renderTimer = null; const task = active(); if (!task || !pendingText) return; task.answer += pendingText; pendingText = ""; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; scrollMessages(); } }; const enqueueText = text => { pendingText += text || ""; if (!renderTimer) renderTimer = requestAnimationFrame(flushText); }; const finish = () => { if (closed) return; flushText(); closed = true; es.close(); resolve(); }; es.addEventListener("delta", event => { const data = JSON.parse(event.data); enqueueText(data.delta || ""); }); es.addEventListener("progress", event => { const data = JSON.parse(event.data); const task = active(); if (!task) return; task.trace = data.trace || []; if (isVisible() && task.progressEl?.isConnected) renderTrace(task.progressEl, task.trace); }); es.addEventListener("final", event => { const data = JSON.parse(event.data); flushText(); applyMessageIds(data); const task = active(); if (task) { task.answer = data.answer ?? task.answer; task.imageUrls = data.image_urls || []; } if (task && isVisible() && task.answerEl?.isConnected) { const message = task.answerEl.closest(".message"); if (message) message.sourceRecords = data.sources || []; renderAnswer(task.answerEl, task.answer, data.sources || []); renderAnswerImages(task.answerEl.closest(".bubble")?.querySelector(".answer-images"), task.imageUrls); renderTrace(task.progressEl, task.trace.map(step => ({...step, status:"completed"}))); renderSources(data.sources || []); } finish(); }); es.addEventListener("error", event => { const task = active(); try { const data = JSON.parse(event.data); applyMessageIds(data); if (task) { task.error = data.error || "未知错误"; task.answer = "本次处理未完成。"; if (isVisible() && task.answerEl?.isConnected) { task.answerEl.textContent = task.answer; renderTrace(task.progressEl, task.trace, task.error); } } } catch (_) { if (task && !task.answer) task.answer = "连接中断，请检查后端日志。"; } finish(); }); es.onerror = () => { const task = active(); if (!closed && task?.answer) finish(); else if (!closed) { es.close(); reject(new Error("SSE 连接中断")); } }; }); }
     async function loadSessionsSilently(query) { const data = await request(`${QUERY_API}/sessions?limit=${SESSION_PAGE_SIZE}&offset=0`); state.sessions = data.items || []; state.sessionOffset = state.sessions.length; state.hasMoreSessions = Boolean(data.has_more); renderSessions(); }
 
     async function uploadFiles(files) { const valid = [...files].filter(file => /\.(pdf|md|txt|docx|pptx|xlsx|csv|html?|json)$/i.test(file.name)); if (!valid.length) return toast("请选择受支持的文档文件"); const kbId = $("#uploadKbSelect").value; if (!kbId) return toast("请先创建知识库"); for (const file of valid) uploadOne(file, kbId); }
@@ -727,8 +764,9 @@
     $("#sendBtn").addEventListener("click", sendQuery);
     $("#queryInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendQuery(); } });
     $("#sourceToggle").addEventListener("click", () => $("#sourcePanel").classList.toggle("open"));
+    $("#clearHistoryBtn").addEventListener("click", clearCurrentHistory);
     $("#sourceClose").addEventListener("click", () => $("#sourcePanel").classList.remove("open"));
-    $("#messages").addEventListener("click", event => { const citation = event.target.closest(".citation-link"); if (!citation) return; event.preventDefault(); const messageSources = citation.closest(".message")?.sourceRecords || []; if (messageSources.length) renderSources(messageSources); focusSource(citation.dataset.sourceIndex); });
+    $("#messages").addEventListener("click", event => { const deleteButton = event.target.closest(".message-delete"); if (deleteButton) { deleteMessage(deleteButton.closest(".message")); return; } const citation = event.target.closest(".citation-link"); if (!citation) return; event.preventDefault(); const messageSources = citation.closest(".message")?.sourceRecords || []; if (messageSources.length) renderSources(messageSources); focusSource(citation.dataset.sourceIndex); });
     $("#createKbBtn").addEventListener("click", () => $("#kbModal").classList.add("open"));
     $$('[data-close-modal]').forEach(btn => btn.addEventListener("click", () => $("#kbModal").classList.remove("open")));
     $("#confirmCancel").addEventListener("click", () => closeConfirm(false));

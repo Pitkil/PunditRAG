@@ -3,12 +3,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
+from bson import ObjectId
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.logger import logger
+from app.clients import mongo_history_utils as history_module
 from app.import_process.agent.api import server as import_server
 from app.query_process.agent.nodes import node_answer_output as answer_module
 from app.query_process.agent.nodes import node_search_embedding as search_module
@@ -133,12 +135,61 @@ def test_workspace_api_contract():
         assert upload.json()["document_ids"] == ["document-1"]
 
 
+def test_chat_message_delete_is_scoped_to_session():
+    message_id = "64b64c9f1c2d3e4f5a6b7c8d"
+    mongo_tool = MagicMock()
+    mongo_tool.chat_message.delete_one.return_value.deleted_count = 1
+
+    with patch.object(history_module, "get_history_mongo_tool", return_value=mongo_tool):
+        deleted = history_module.delete_chat_message("session-1", message_id)
+
+    assert deleted == 1
+    mongo_tool.chat_message.delete_one.assert_called_once_with(
+        {"_id": ObjectId(message_id), "session_id": "session-1"}
+    )
+    assert history_module.delete_chat_message("session-1", "invalid-id") == 0
+
+
+def test_message_history_management_api():
+    client = TestClient(query_server.app)
+    with (
+        patch.object(query_server, "get_chat_session", return_value={"session_id": "session-1"}),
+        patch.object(query_server, "delete_chat_message", return_value=1) as delete_message,
+        patch.object(query_server, "clear_history", return_value=3) as clear_messages,
+    ):
+        deleted = client.delete(
+            "/history/session-1/messages/64b64c9f1c2d3e4f5a6b7c8d"
+        )
+        cleared = client.delete("/history/session-1")
+
+    assert deleted.status_code == 200
+    assert deleted.json()["message_id"] == "64b64c9f1c2d3e4f5a6b7c8d"
+    assert cleared.status_code == 200
+    assert cleared.json()["deleted_count"] == 3
+    delete_message.assert_called_once_with(
+        "session-1", "64b64c9f1c2d3e4f5a6b7c8d"
+    )
+    clear_messages.assert_called_once_with("session-1")
+
+
+def test_chat_page_exposes_message_management_controls():
+    html = (PROJECT_ROOT / "app/query_process/page/chat.html").read_text(encoding="utf-8")
+    assert 'id="clearHistoryBtn"' in html
+    assert 'class="message-delete"' in html
+    assert "/messages/${encodeURIComponent(messageId)}" in html
+    assert "data.user_message_id" in html
+    assert "data.assistant_message_id" in html
+
+
 if __name__ == "__main__":
     tests = [
         test_knowledge_base_filter,
         test_topic_search_is_an_expansion_not_a_hard_filter,
         test_answer_sources,
         test_workspace_api_contract,
+        test_chat_message_delete_is_scoped_to_session,
+        test_message_history_management_api,
+        test_chat_page_exposes_message_management_controls,
     ]
     passed = 0
     logger.info("=== 开始执行工作台功能回归测试 ===")

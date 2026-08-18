@@ -247,9 +247,11 @@ def test_node_answer_output_non_stream():
         patch.object(answer_module, "push_to_session") as mock_push,
         patch.object(answer_module, "save_chat_message") as mock_save,
     ):
+        mock_save.return_value = "assistant-message-1"
         result = answer_module.node_answer_output(state)
 
     assert result["answer"] == "节点完整答案"
+    assert result["assistant_message_id"] == "assistant-message-1"
     mock_running.assert_called_once()
     mock_done.assert_called_once()
     mock_push.assert_not_called()
@@ -265,9 +267,11 @@ def test_node_answer_output_stream():
         patch.object(answer_module, "save_chat_message") as mock_save,
         patch.object(answer_module.time, "sleep"),
     ):
+        mock_save.return_value = "assistant-message-2"
         result = answer_module.node_answer_output(state)
 
     assert result["answer"] == "流式"
+    assert result["assistant_message_id"] == "assistant-message-2"
     assert [call.args[2]["delta"] for call in mock_push.call_args_list] == ["流式"]
     mock_save.assert_called_once()
 

@@ -88,6 +88,25 @@ def clear_history(session_id:str)->int:
         logging.error("清空会话 %s 历史记录时出错: %s", session_id, str(e))
         return 0
 
+def delete_chat_message(session_id: str, message_id: str) -> int:
+    """删除指定会话中的单条消息，避免跨会话使用消息 ID 误删。"""
+    if not ObjectId.is_valid(message_id):
+        return 0
+    mongo_tool = get_history_mongo_tool()
+    try:
+        result = mongo_tool.chat_message.delete_one(
+            {"_id": ObjectId(message_id), "session_id": session_id}
+        )
+        return result.deleted_count
+    except Exception as e:
+        logging.error(
+            "删除会话 %s 的消息 %s 时出错: %s",
+            session_id,
+            message_id,
+            str(e),
+        )
+        return 0
+
 def update_message_item_names(ids: List[str], item_names: List[str]) -> int:
      """
     批量更新历史会话记录的关键词名称

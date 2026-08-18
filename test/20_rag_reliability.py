@@ -527,6 +527,24 @@ def test_running_session_cannot_be_deleted():
             else:
                 raise AssertionError("正在运行的会话不应允许删除")
             delete_session.assert_not_called()
+
+        with patch.object(query_server, "delete_chat_message") as delete_message:
+            try:
+                query_server.remove_history_message("session-1", "message-1")
+            except HTTPException as exc:
+                assert exc.status_code == 409
+            else:
+                raise AssertionError("正在运行的会话不应允许删除单条消息")
+            delete_message.assert_not_called()
+
+        with patch.object(query_server, "clear_history") as clear_messages:
+            try:
+                query_server.clear_session_history("session-1")
+            except HTTPException as exc:
+                assert exc.status_code == 409
+            else:
+                raise AssertionError("正在运行的会话不应允许清空聊天记录")
+            clear_messages.assert_not_called()
     finally:
         query_server._finish_run("session-1", "run-1")
 

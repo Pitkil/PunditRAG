@@ -10,7 +10,11 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from app.clients.mongo_history_utils import get_recent_messages
+from app.clients.mongo_history_utils import (
+    clear_history,
+    delete_chat_message,
+    get_recent_messages,
+)
 from app.clients.mongo_workspace_utils import (
     count_chat_sessions,
     delete_chat_session,
@@ -186,6 +190,8 @@ def run_query_graph(
                     "status": "completed",
                     "image_urls": final_state.get("image_urls", []),
                     "sources": final_state.get("sources", []),
+                    "user_message_id": final_state.get("user_message_id", ""),
+                    "assistant_message_id": final_state.get("assistant_message_id", ""),
                 },
             )
         return final_state
@@ -194,7 +200,15 @@ def run_query_graph(
         set_task_result(run_id, "error", str(exc))
         update_task_status(run_id, TASK_STATUS_FAILED, is_stream)
         if is_stream:
-            push_to_session(run_id, SSEEvent.ERROR, {"error": str(exc)})
+            push_to_session(
+                run_id,
+                SSEEvent.ERROR,
+                {
+                    "error": str(exc),
+                    "user_message_id": get_task_result(run_id, "user_message_id"),
+                    "assistant_message_id": get_task_result(run_id, "assistant_message_id"),
+                },
+            )
         return None
     finally:
         _finish_run(session_id, run_id)
@@ -244,6 +258,8 @@ async def query(req: QueryRequest, background_tasks: BackgroundTasks):
         "error": get_task_result(run_id, "error"),
         "image_urls": final_state.get("image_urls", []),
         "sources": final_state.get("sources", []),
+        "user_message_id": final_state.get("user_message_id", ""),
+        "assistant_message_id": final_state.get("assistant_message_id", ""),
         "done_list": get_done_task_list(run_id),
     }
 
@@ -290,6 +306,27 @@ def get_history(session_id: str, limit: int = 50):
             }
         )
     return {"session_id": session_id, "messages": messages}
+
+
+@app.delete("/history/{session_id}/messages/{message_id}")
+def remove_history_message(session_id: str, message_id: str):
+    if _session_is_running(session_id):
+        raise HTTPException(status_code=409, detail="该对话正在生成答案，请完成后再删除消息")
+    if not get_chat_session(session_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if not delete_chat_message(session_id, message_id):
+        raise HTTPException(status_code=404, detail="消息不存在或不属于当前会话")
+    return {"deleted": True, "session_id": session_id, "message_id": message_id}
+
+
+@app.delete("/history/{session_id}")
+def clear_session_history(session_id: str):
+    if _session_is_running(session_id):
+        raise HTTPException(status_code=409, detail="该对话正在生成答案，请完成后再清空记录")
+    if not get_chat_session(session_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    deleted_count = clear_history(session_id)
+    return {"cleared": True, "session_id": session_id, "deleted_count": deleted_count}
 
 
 class SessionPayload(BaseModel):

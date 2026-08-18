@@ -219,7 +219,7 @@ def step_6_save_chat_history(state):
     """
     保存聊天记录
     """
-    save_chat_message(
+    message_id = save_chat_message(
         session_id= state['session_id'],
         role="assistant",
         text=state.get("answer"),
@@ -230,6 +230,13 @@ def step_6_save_chat_history(state):
         kb_ids=state.get("kb_ids", []),
         document_ids=state.get("document_ids", []),
     )
+    state["assistant_message_id"] = message_id
+    set_task_result(
+        state.get("run_id") or state["session_id"],
+        "assistant_message_id",
+        message_id,
+    )
+    return message_id
 
 @node_log("node_answer_output")
 def node_answer_output(state):
