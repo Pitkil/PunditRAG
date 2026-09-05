@@ -1,555 +1,277 @@
 <div align="center">
 
-# PunditRAG
-
-**面向中文技术资料的可追溯 RAG 知识库系统**
-
-文档导入 · 多路混合检索 · 证据重排 · 流式回答 · 引用治理
+<h1>PunditRAG</h1>
+<p><strong>面向技术资料的可追溯 RAG 知识库</strong></p>
+<p>导入文档，提出问题，沿着引用回到原文。</p>
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-1C3C3C)](https://github.com/langchain-ai/langgraph)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![OpenAI Compatible](https://img.shields.io/badge/LLM-OpenAI--compatible-412991)](#配置说明)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Orchestration-1C3C3C)](https://github.com/langchain-ai/langgraph)
+[![CI](https://github.com/Pitkil/PunditRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Pitkil/PunditRAG/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT-4e6b99)](LICENSE)
 
-[中文](README.md) · [English](README.en.md) · [快速开始](#快速开始) · [架构](#系统架构)
+**简体中文** · [English](README.en.md)
+
+[核心能力](#核心能力) · [界面预览](#界面预览) · [快速开始](#快速开始) · [检索原理](#检索原理) · [开发与评测](#开发与评测)
 
 </div>
 
-<p align="center"><img src="docs/assets/punditrag-hero.png" alt="PunditRAG 学术风格首页示意图" width="100%"></p>
+<p align="center"><img src="docs/assets/punditrag-hero.png" alt="PunditRAG：从文档到带引用的回答" width="100%"></p>
 
-PunditRAG 面向“导入资料后直接提问”的真实使用场景：把用户问题、检索证据和对话历史交给回答模型，同时对范围、引用和输出进行治理。它适合技术手册、论文、标准、产品资料和团队知识库的本地部署与二次开发。
+PunditRAG 将文档解析、混合检索和对话问答整合到一个知识库工作台中。你可以导入论文、技术手册、标准和产品资料，选择知识库或文档范围提问，查看回答引用的原文与本轮执行过程。
 
-> 设计原则：让模型阅读证据，而不是猜测证据。型号、编号、数值和日期优先逐字来自检索内容；证据不足时明确说明缺口。
-
-## 目录
-
-- [核心能力](#核心能力)
-- [系统架构](#系统架构)
-- [对话处理过程](#对话处理过程)
-- [快速开始](#快速开始)
-- [配置说明](#配置说明)
-- [使用方式](#使用方式)
-- [API 概览](#api-概览)
-- [Prompt 设计](#prompt-设计)
-- [评测结果](#评测结果)
-- [测试](#测试)
-- [安全与可靠性](#安全与可靠性)
-- [项目结构](#项目结构)
-- [参与贡献](#参与贡献)
-- [许可证](#许可证)
-- [开源状态](#开源状态)
-- [限制与后续工作](#限制与后续工作)
+项目使用 LangGraph 编排导入和查询流程，提供 FastAPI 接口与 SSE 流式输出。Embedding 和 Reranker 在本地运行，对话模型通过 OpenAI-compatible API 配置。
 
 ## 核心能力
 
-## 为什么是 PunditRAG
-
-| 优势 | 解决的问题 | 实现方式 |
-|---|---|---|
-| 多路召回 | 单一向量检索容易漏掉术语、编号和表格字段 | 原问题 Dense + Sparse、HyDE Dense + Sparse 并行召回 |
-| 稠密 + 稀疏互补 | 语义相似不等于关键词命中，精确型号也不能只靠语义 | BGE-M3 同时生成稠密向量和稀疏向量，分别捕获语义与词项匹配 |
-| RRF 融合 | 不同召回通道分数不可直接比较 | Reciprocal Rank Fusion 按排名融合，降低单一路径偏差 |
-| 多语言重排 | 召回结果多但相关性层次不清 | BGE Reranker 对问题—证据对重新评分并断崖式截断 |
-| 可追溯回答 | RAG 容易出现“看似合理但来源不明”的答案 | 引用编号白名单、越界引用拦截、跨来源去重 |
-| 范围可控 | 多知识库环境中容易串库 | 显式 `kb_ids` / `document_ids` 过滤，不隐式扫描全部资料 |
-
-### 多路混合检索详解
-
-一次普通问答会并行生成多组候选：
-
-1. **原问题检索**：保留用户原话，用 BGE-M3 的稠密向量捕获语义相近片段，同时用稀疏向量命中型号、缩写、编号和专有名词。
-2. **HyDE 检索**：模型先生成一段仅用于检索扩展的假设性文本，再对该文本执行同样的 Dense + Sparse 检索，补足用户问题与原文表述不同造成的召回损失。
-3. **主题扩展**：已识别的文档主题只作为额外召回入口，不作为硬过滤条件，避免主题识别错误导致零召回。
-4. **RRF 融合**：将原问题和 HyDE 的排名列表合并，保留多路都出现或单路排名靠前的候选。
-5. **重排与邻居补齐**：Reranker 以用户原问题和候选正文重新计算相关性；最终锚点确定后，再补充同章节相邻切片，恢复表格、定义和上下文的连续性。
-
-稠密检索擅长“意思相近”，稀疏检索擅长“字面精确”；两者并行再用 RRF 融合，比单独依赖某一种分数更适合中文技术资料。
-
-### 文档导入
-
-- 使用 MinerU / Magic-PDF 将 PDF 等资料转换为 Markdown。
-- 支持直接导入 `.md`，并可将 `.txt`、`.docx`、`.pptx`、`.xlsx`、`.csv`、`.html`、`.htm`、`.json` 转换为 Markdown。
-- 按 Markdown 标题、段落、表格和表格行进行结构化切分。
-- 默认以近似 token 计数控制 `500` token 切片和 `80` token 重叠。
-- 对密集的“字段 + 参数”技术指标按行分组，并在每个子切片中保留章节标题。
-- Embedding 文本包含文档名、章节名和主题信息，降低脱离上下文的误召回。
-- 切片向量写入 Milvus，知识库、文档与会话元数据写入 MongoDB，解析出的图片写入 MinIO；导入中间文件保存在 `temp-files/`。
-
-### 检索与回答
-
-- BGE-M3 Dense + Sparse 混合召回。
-- 原始问题检索与 HyDE 假设文档检索并行执行。
-- 使用 RRF 融合多路结果，再通过 BGE Reranker 精排。
-- 主题匹配作为召回扩展，不作为可能漏召回的硬过滤条件。
-- 高于重排阈值的候选进入常规回答；全部低于阈值但确有召回时，保留少量低置信候选交给回答模型核验，而不是在重排阶段提前拒答。
-- 只有本地与可选联网检索都没有返回候选时，才直接给出无资料拒答。
-- 只在调用方显式传入的知识库范围内检索。
-- 回答使用 `[n]` 标注来源，API 只返回答案实际引用的证据。
-- 支持可选联网搜索；联网失败只降级联网分支，不影响本地知识库检索。
-
-### 工作台与运维
-
-- 知识库、文档和会话管理。
-- 非流式响应与 SSE 流式响应。
-- MongoDB、Milvus、MinIO 真实依赖健康检查。
-- 文档删除时同步清理向量、对象存储、本地文件和元数据。
-- 自建集及 RGB、CRUD-RAG、MTRAG 评测适配器。
-
-## 系统架构
-
-<p align="center"><img src="docs/assets/punditrag-architecture.png" alt="PunditRAG 文档导入、检索与回答架构" width="100%"></p>
-
-上图是面向读者的总览；代码级节点、数据存储和每条箭头的具体含义见下方 Mermaid 图与对话处理过程。
-
-```mermaid
-flowchart LR
-    U[浏览器 / API 客户端]
-
-    subgraph Import[文档导入 :8000]
-        I1[上传与校验]
-        I2[MinerU / Markdown]
-        I3[结构化切分]
-        I4[BGE-M3 Embedding]
-    end
-
-    subgraph Query[查询服务 :8001]
-        Q1[问题重写与主题识别]
-        Q2[原问题混合检索]
-        Q3[HyDE 混合检索]
-        Q4[可选 Web Search]
-        Q5[RRF 融合]
-        Q6[BGE Reranker]
-        Q7[带引用回答]
-    end
-
-    M[(MongoDB)]
-    V[(Milvus)]
-    O[(MinIO)]
-    L[OpenAI-compatible LLM]
-
-    U --> I1 --> I2 --> I3 --> I4 --> V
-    I1 --> M
-    I2 --> O
-
-    U --> Q1
-    Q1 --> Q2
-    Q1 --> Q3
-    Q1 --> Q4
-    Q2 --> Q5
-    Q3 --> Q5
-    Q4 --> Q5
-    Q5 --> Q6 --> Q7 --> U
-    V --> Q2
-    V --> Q3
-    M --> Q1
-    Q1 --> L
-    Q3 --> L
-    Q7 --> L
-```
-
-查询主链路：
-
-```text
-问题理解 -> 原问题/HyDE 并行召回 -> RRF -> Reranker -> 证据约束生成 -> 引用过滤
-```
-
-## 对话处理过程
-
-<p align="center"><img src="docs/assets/punditrag-workflow.png" alt="PunditRAG 查询处理流程" width="100%"></p>
-
-一次对话同时使用两个标识：`session_id` 表示可持续多轮的会话，负责关联历史消息；`run_id` 表示单次请求，负责隔离任务状态、节点追踪和 SSE 事件。即使同一会话连续发起查询，每轮也有独立的 `run_id`。
-
-```mermaid
-sequenceDiagram
-    participant U as 用户 / 工作台
-    participant A as Query API
-    participant G as LangGraph
-    participant DB as MongoDB
-    participant V as Milvus
-    participant W as Web Search
-    participant L as LLM / Reranker
-
-    U->>A: POST /query
-    A->>DB: 校验 kb_ids，创建或确认会话
-    A->>G: 初始化 session_id、run_id 与查询状态
-    G->>DB: 读取最近对话历史
-    G->>L: 消解指代、改写问题、提取主题
-    par 原问题混合检索
-        G->>V: Dense + Sparse
-    and HyDE 混合检索
-        G->>L: 生成假设性文档
-        G->>V: Dense + Sparse
-    and 可选联网检索
-        G->>W: 搜索改写后的问题
-    end
-    G->>G: RRF 融合两路本地召回
-    G->>L: 合并联网结果并执行 Reranker
-    G->>L: 按证据质量生成带引用答案
-    G->>G: 过滤未引用来源与无效图片
-    G->>DB: 保存助手消息、来源和图片
-    G-->>A: 最终状态
-    A-->>U: JSON 或 SSE final 事件
-```
-
-具体处理顺序如下：
-
-1. **请求校验**：`POST /query` 校验问题非空；显式传入的 `kb_ids` 如果包含未知知识库，直接返回 `404`。未提供 `session_id` 时自动创建，随后为本轮生成新的 `run_id`。
-2. **状态初始化**：API 建立任务状态，写入问题、知识库范围、流式开关和联网开关，再调用查询图。流式请求立即返回 `run_id`，实际查询在后台执行。
-3. **历史理解**：`node_item_name_confirm` 从 MongoDB 读取当前会话的最近消息。LLM 结合历史消解“它”“上一款”等指代，把当前问题改写成可独立检索的问题，并提取主题或实体。明确寒暄走本地短路回答，不加载向量模型。
-4. **主题扩展与范围约束**：系统在调用方明确选择的知识库中匹配已导入资料主题。高置信主题会加入改写问题以增强召回，低置信主题只记录日志，不会成为硬过滤条件。没有 `kb_ids` 时不会偷偷扫描全部本地知识库。
-5. **特殊摘要路由**：当问题明确要求“总结整份资料”等全文任务时，流程绕过常规 Top-K 检索，读取所选知识库的全部相关切片，执行 Map-Reduce 摘要，并保留分段引用。普通问答继续走并行检索。
-6. **并行召回**：普通问答同时执行原问题的 BGE-M3 Dense/Sparse 混合检索、HyDE 生成后的 Dense/Sparse 混合检索，以及可选 Web Search。联网失败只清空联网分支，不中断本地结果。
-7. **融合与精排**：RRF 先融合原问题和 HyDE 两路本地结果；联网结果随后与 RRF 结果统一为同一种文档结构，再由 BGE Reranker 重新打分和排序。
-8. **证据分级**：高于阈值的候选标记为 `qualified`；只有候选全部来自联网搜索且本地 Reranker 尚未就绪时，系统才按搜索顺序保留有限候选并标记为 `unscored`；有召回但全部低于阈值时保留少量候选并标记为 `low`，交给回答模型核验正文；所有分支均为零召回时直接拒答。
-9. **受约束生成**：回答 Prompt 同时包含改写问题、历史、主题、候选正文、证据质量和可用图片。模型必须逐项核对正文，用 `[n]` 引用来源；数字、型号、日期等精确信息不得由常识补齐。
-10. **输出后处理**：系统只保留答案中真实出现的引用编号，并将其映射为 `sources`；模型输出的图片 URL 必须存在于候选白名单，否则从答案中删除。
-11. **持久化与返回**：用户消息和助手消息分别写入 MongoDB。非流式请求直接返回答案、来源、图片和已完成节点；流式请求通过 `/query/stream/{run_id}` 发送 `delta`，最后发送包含完整结果的 `final` 事件。
-12. **失败隔离**：节点异常会把本轮任务标记为 `failed`，记录错误并在流式模式发送 `error` 事件。同一 `session_id` 下正在运行的请求不会因为删除会话而失去上下文，API 会返回 `409` 阻止删除。
-
-主要分支行为：
-
-| 场景 | 系统行为 |
+| 能力 | 使用价值 |
 |---|---|
-| 你好、你是谁等明确寒暄 | 本地直接回答，跳过检索 |
-| 明确要求整份资料摘要 | 进入 Map-Reduce 摘要链路 |
-| 未选择知识库、关闭联网 | 本地零扫描，最终拒答 |
-| 未选择知识库、开启联网 | 只允许联网分支提供候选 |
-| 联网搜索失败 | 本地链路继续，联网分支降级为空 |
-| Reranker 未就绪且只有联网候选 | 按搜索顺序保留有限候选，由回答模型严格核验 |
-| Reranker 未就绪且包含本地候选 | 本轮查询失败并记录错误，不静默跳过精排 |
-| 已召回但得分低 | 传递少量低置信候选，不在排序节点武断拒答 |
-| 全部召回为空 | 不调用证据生成链路，直接返回无资料提示 |
+| **稠密 + 稀疏混合检索** | BGE-M3 同时检索语义相近内容与词项匹配内容，兼顾自然语言问题、型号、缩写和术语。 |
+| **原问题 + HyDE 多路召回** | 用户问题与假设文档分别检索，经 RRF 合并候选，增加不同表述下找到原文的机会。 |
+| **多语言重排** | BGE Reranker 联合阅读问题与候选内容，按相关性排序并控制证据数量。 |
+| **完整文档与邻居上下文** | 符合预算的所选文档直接读取全部切片；长文档检索后补充同章节相邻片段。 |
+| **回答与原文关联** | 文档依据使用 `[n]` 引用，来源面板展示正文；没有资料依据时允许明确标识的 AI 通识回答。 |
+| **可操作的知识库工作台** | 管理文档与会话，查看执行轨迹，删除单条消息、清空聊天记录，按需开启联网补充。 |
+
+支持 PDF、Markdown、TXT、DOCX、PPTX、XLSX、CSV、HTML、JSON 等文件。PDF 使用 MinerU API 解析，其他支持格式在本地转换为 Markdown，再进行结构化切分。
 
 ## 界面预览
 
-| 知识库工作台 | 执行轨迹与来源 |
-|---|---|
-| ![工作台](docs/assets/punditrag-workbench.png) | ![执行轨迹](docs/assets/punditrag-trace.png) |
+**知识库问答工作台** — 选择资料范围、提问，并查看引用来源。
+
+<p align="center"><img src="docs/assets/punditrag-workbench.png" alt="真实工作台截图：资料范围、问答和引用原文" width="100%"></p>
+
+<details>
+<summary>查看执行轨迹截图</summary>
+
+<p align="center"><img src="docs/assets/punditrag-trace.png" alt="真实界面截图：查询节点与执行轨迹" width="100%"></p>
+
+</details>
 
 ## 快速开始
 
-### 环境要求
+### 1. 准备环境
 
-- Docker Desktop 与 Docker Compose
-- NVIDIA GPU、驱动和 NVIDIA Container Toolkit（推荐）
-- 可用的 OpenAI-compatible LLM API
-- MinerU API Token（导入 PDF 时使用）
-- 如需本地运行 Python：Python `>= 3.11` 与 `uv`
+安装 Docker Desktop / Docker Engine 与 Docker Compose，并准备一个 OpenAI-compatible 模型服务的 API Key。导入 PDF 时还需要 MinerU API Token。
 
-默认 Docker 配置启用 GPU。没有 CUDA 环境时，需要在 `.env.docker` 中将 `BGE_DEVICE` 和 `BGE_RERANKER_DEVICE` 改为 `cpu`，同时关闭 FP16，并移除或调整 `docker-compose.yml` 中的 GPU 配置。
+默认 Compose 使用 NVIDIA GPU；Linux 主机需要 NVIDIA Container Toolkit，Windows 使用支持 GPU 的 Docker Desktop 环境。CPU 运行时，将 `BGE_DEVICE` 和 `BGE_RERANKER_DEVICE` 设为 `cpu`，将两个 FP16 配置设为 `0`，并移除 Compose 中的 `gpus: all`。
 
-### 1. 配置环境变量
+### 2. 下载与配置
+
+```bash
+git clone https://github.com/Pitkil/PunditRAG.git
+cd PunditRAG
+```
+
+Windows PowerShell：
 
 ```powershell
 Copy-Item .env.docker.example .env.docker
+notepad .env.docker
 ```
 
-至少修改以下占位值：
+Linux / macOS 使用 `cp .env.docker.example .env.docker`，再通过文本编辑器填写配置：
+
+| 配置 | 填写内容 |
+|---|---|
+| `OPENAI_API_KEY` | 模型服务的 API Key |
+| `OPENAI_BASE_URL` | 服务商提供的兼容接口基础地址 |
+| `LLM_DEFAULT_MODEL` | 对话模型名称 |
+| `VL_MODEL` | 同一服务商下支持图片输入的模型，供图片摘要使用 |
+| `MINERU_API_TOKEN` | PDF 解析凭据 |
+| `MONGO_ROOT_PASSWORD` / `MINIO_ROOT_PASSWORD` | 替换模板中的服务密码；Compose 自动派生应用连接配置 |
+
+默认模板使用 DashScope。OrcaRouter 的文本模型配置示例：
 
 ```dotenv
-OPENAI_API_KEY=your-api-key
-MINERU_API_TOKEN=your-mineru-token
-MONGO_URL=mongodb://punditrag:your-password@mongo:27017/kb002?authSource=admin
-MINIO_SECRET_KEY=your-password
-```
-
-项目通过 `ChatOpenAI` 使用 OpenAI-compatible 接口，可接入 OpenAI、DeepSeek、OrcaRouter、OpenRouter、SiliconFlow、火山方舟以及本地 vLLM/Ollama 网关。以 OrcaRouter 为例：
-
-```dotenv
-OPENAI_API_KEY=sk-orca-...
+OPENAI_API_KEY=replace-with-your-orcarouter-key
 OPENAI_BASE_URL=https://api.orcarouter.ai/v1
 LLM_DEFAULT_MODEL=openai/gpt-4o-mini
 ```
 
-模型名称按服务商文档填写；服务商专属请求体可通过 `OPENAI_EXTRA_BODY_JSON` 传入 JSON 对象。不要把真实密钥提交到仓库。
+模型名以服务商目录为准；切换服务商时也要核对 `VL_MODEL`。普通调用、JSON 输出和图片输入能力取决于所选接口与模型，配置示例不代表所有服务商均已实测。可选扩展参数通过 `OPENAI_EXTRA_BODY_JSON` 设置为 JSON 对象。
 
-同时设置 `MONGO_ROOT_PASSWORD`、`MINIO_ROOT_PASSWORD` 和 `MILVUS_MINIO_ROOT_PASSWORD`。`MONGO_URL`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY` 必须与对应服务凭据一致。不要在公开仓库中提交真实密钥。
+### 3. 启动
 
-如果你已经有旧版 `.env.docker`，请对照最新的 `.env.docker.example` 补齐 8 个服务凭据变量；启动脚本会拒绝缺失或仍为示例占位符的配置。
-
-### 2. 启动服务
-
-Windows 可直接运行：
+Windows：
 
 ```powershell
 .\start.ps1
 ```
 
-也可以使用 Docker Compose：
+脚本在没有应用镜像时自动构建，后续启动复用镜像；需要重建时运行 `.\start.ps1 -Build`。首次使用需要下载本地 Embedding 和 Reranker 模型。
 
-```powershell
+其他平台也可以直接使用 Compose：
+
+```bash
 docker compose --env-file .env.docker up -d --build
-docker compose --env-file .env.docker ps
 ```
 
-首次启动需要下载 BGE-M3 和 Reranker 模型，耗时取决于网络与磁盘速度。
+后续启动可去掉 `--build`。
 
-### 3. 打开应用
+### 4. 导入资料并提问
+
+打开 [知识库工作台](http://127.0.0.1:8001/query/html)，创建知识库，上传文档并等待导入完成。选择知识库或具体文档后提问，例如“详细讲解这篇论文的方法与实验结果”。
+
+可以先上传仓库自带的 [示例说明书](eval/datasets/documents/万用表RS-12的使用.md)，再问“这款万用表使用什么电池？”。点击回答中的来源，核对对应原文。
+
+<details>
+<summary>服务地址与常用运维命令</summary>
 
 | 服务 | 地址 |
 |---|---|
-| 知识库工作台 | <http://127.0.0.1:8001/query/html> |
-| 导入 API 文档 | <http://127.0.0.1:8000/docs> |
-| 查询 API 文档 | <http://127.0.0.1:8001/docs> |
-| 导入服务健康检查 | <http://127.0.0.1:8000/health> |
-| 查询服务健康检查 | <http://127.0.0.1:8001/health> |
-| MinIO Console | <http://127.0.0.1:9101> |
-查看日志：
+| 工作台 | http://127.0.0.1:8001/query/html |
+| 导入 API 文档 | http://127.0.0.1:8000/docs |
+| 查询 API 文档 | http://127.0.0.1:8001/docs |
+| MinIO Console | http://127.0.0.1:9101 |
 
-```powershell
+```bash
+docker compose --env-file .env.docker ps
 docker compose --env-file .env.docker logs -f app
-```
-
-停止服务：
-
-```powershell
 docker compose --env-file .env.docker down
 ```
 
-## 配置说明
+</details>
 
-主要参数位于 `.env.docker`；本机直接运行时可参考 `.env.example`。
+## 检索原理
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `LLM_DEFAULT_MODEL` | `qwen-flash` | OpenAI-compatible 对话模型 |
-| `BGE_DEVICE` | `cuda:0` | Embedding 运行设备 |
-| `BGE_RERANKER_DEVICE` | `cuda:0` | Reranker 运行设备 |
-| `CHUNK_SIZE_TOKENS` | `500` | 文档切片目标大小 |
-| `CHUNK_OVERLAP_TOKENS` | `80` | 普通切片重叠大小 |
-| `DENSE_SPEC_GROUP_LINES` | `5` | 密集技术指标每组行数 |
-| `RETRIEVAL_TOP_K` | `20` | 单路知识库召回数量 |
-| `RRF_TOP_K` | `30` | RRF 输出上限 |
-| `RERANK_MAX_TOP_K` | `8` | 最终证据上限 |
-| `RERANK_MIN_TOP_K` | `2` | 合格证据的最低保留数量 |
-| `RERANK_MIN_SCORE` | `0.09` | 重排最低相关度 |
-| `RERANK_FALLBACK_TOP_K` | `3` | 无候选达到阈值时，交给回答模型复核的低置信候选数 |
-| `MAX_UPLOAD_FILES` | `20` | 单次上传文件数上限 |
-| `MAX_UPLOAD_SIZE_MB` | `50` | 单文件大小上限 |
-| `CORS_ALLOW_ORIGINS` | 本地地址白名单 | 允许访问 API 的 Origin |
+### 稠密检索与稀疏检索：两种互补信号
 
-## 使用方式
+**稠密检索（Dense）** 将问题与文档编码为连续向量，寻找语义相关的片段。例如“电池多久换一次”与原文“续航时间”用词不同，仍可能通过语义相似度召回。
 
-### 创建知识库
+**稀疏检索（Sparse）** 使用 BGE-M3 生成的词项权重向量，补充术语、缩写和型号等词项匹配信号。它是模型生成的稀疏表示，当前实现并不是单独接入 BM25；具体编号是否完全一致仍需核对原文。
 
-```powershell
-$kb = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:8000/knowledge-bases" `
-  -ContentType "application/json" `
-  -Body '{"name":"设备说明书","description":"产品使用与维护资料"}'
+两路都在 Milvus 中使用内积检索。片段混合检索通过 `WeightedRanker` 融合稠密与稀疏得分，默认权重为 `0.5 / 0.5`。
 
-$kb.kb_id
-```
+### 原问题与 HyDE：扩展检索表达
 
-### 上传文档
+常规检索路径并行执行两个分支，每个分支都使用 Dense + Sparse：
 
-```powershell
-curl.exe -X POST "http://127.0.0.1:8000/upload" `
-  -F "kb_id=$($kb.kb_id)" `
-  -F "files=@eval/datasets/documents/万用表RS-12的使用.md;type=text/markdown"
-```
+| 分支 | 检索输入 | 作用 |
+|---|---|---|
+| 原问题分支 | 用户原话，结合当前文档名或已匹配主题补充检索上下文 | 保留实际问题与显式范围。 |
+| HyDE 分支 | 模型生成的假设文档 | 用接近正文的表述补充召回。生成文本仅用于搜索，不作为答案证据。 |
 
-上传接口返回 `task_ids`。使用 `GET /status/{task_id}` 查询解析和向量导入进度。
+主题名称 `item_name` 还会触发范围内的补充搜索，并与范围内的常规结果去重合并。主题匹配不会替代知识库或文档范围过滤。
 
-### 查询知识库
+HyDE 默认设置 10 秒调用超时，失败后返回空候选，原问题检索可以继续。
 
-```powershell
-$body = @{
-  query = "万用表使用的电池是什么型号？"
-  session_id = "demo-session"
-  kb_ids = @($kb.kb_id)
-  is_stream = $false
-  enable_web_search = $false
-} | ConvertTo-Json
+### RRF：融合两个分支的排名
 
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:8001/query" `
-  -ContentType "application/json; charset=utf-8" `
-  -Body ([Text.Encoding]::UTF8.GetBytes($body))
-```
-
-示例回答：
+分支内的 Dense/Sparse 加权融合之后，`node_rrf` 再合并原问题与 HyDE 的候选列表：
 
 ```text
-RS-12 数字万用表使用一粒 9V (NEDA 1604) 电池 [2]。
+RRF(d) = Σ 1 / (60 + rank_i(d))
 ```
 
-响应中的 `sources` 只包含答案实际引用的来源，可用于前端证据面板或后续审计。
+两条分支权重均为 1；同一片段在多条列表中出现时累积分数。RRF 使用排名，不直接相加两条分支的原始相似度分数。默认保留前 30 个候选进入后续处理。
 
-## API 概览
+开启联网时，网页候选在重排节点与本地 RRF 结果合并；网页不参与上述本地 RRF 分数计算。
 
-### 导入服务 `:8000`
+### Reranker：从候选中选择证据
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/health` | 检查 MongoDB、Milvus、MinIO |
-| `POST` | `/knowledge-bases` | 创建知识库 |
-| `GET` | `/knowledge-bases` | 查询知识库列表 |
-| `PATCH` | `/knowledge-bases/{kb_id}` | 修改知识库 |
-| `DELETE` | `/knowledge-bases/{kb_id}` | 删除知识库及其数据 |
-| `POST` | `/upload` | 上传并异步导入文档 |
-| `GET` | `/status/{task_id}` | 查询导入状态 |
-| `GET` | `/knowledge-bases/{kb_id}/documents` | 查询文档列表 |
-| `DELETE` | `/documents/{document_id}` | 删除文档及关联数据 |
-| `GET` | `/assets/{object_path}` | 代理访问私有 MinIO 资源 |
+BGE Reranker 联合输入用户原问题、文档标题、章节和候选正文，重新计算相关性。系统随后去重、按阈值分级，并根据相邻候选的分差控制保留数量。
 
-### 查询服务 `:8001`
+当候选均低于阈值时，系统保留有限数量的非零低分片段，标记为低置信，供回答模型阅读核验。重排得分用于选择上下文，不代表内容真实性或答案正确率。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/health` | 检查 MongoDB、Milvus |
-| `POST` | `/query` | 发起非流式或流式查询 |
-| `GET` | `/query/stream/{run_id}` | 订阅 SSE 查询结果 |
-| `GET` | `/status/{task_id}` | 查询任务状态与追踪信息 |
-| `GET` | `/history/{session_id}` | 查询会话历史 |
-| `GET/POST` | `/sessions` | 查询或创建会话 |
-| `PATCH/DELETE` | `/sessions/{session_id}` | 修改或删除会话 |
+对于指定文档的检索结果，系统在最终锚点附近补充同文档、同章节的前后片段，默认 `part ± 1`。这些邻居用于恢复连续上下文，扩展发生在重排之后。
 
-完整请求与响应结构以 FastAPI 自动生成的 `/docs` 为准。
+## 系统架构与对话流程
 
-## Prompt 设计
+<p align="center"><img src="docs/assets/punditrag-architecture.png" alt="生命周期概览：导入、切分、嵌入、检索、重排、回答" width="100%"></p>
 
-`prompts/` 中的 9 个 Prompt 按职责拆分，并由回归测试校验占位符与关键约束：
+导入阶段将文档转换为 Markdown，按标题、段落和表格结构切分，并添加文档主题与元数据。BGE-M3 编码后写入 Milvus；MongoDB 保存文档与会话信息，MinIO 保存 Markdown 图片处理路径中的图片。
 
-| Prompt | 用途 |
+<p align="center"><img src="docs/assets/punditrag-workflow.png" alt="常规检索示意：问题与范围、两路检索、融合、重排和流式回答" width="100%"></p>
+
+上图展示常规检索分支。完整处理过程还包含短文档直读、全文总结及可选联网：
+
+| 步骤与数据传递 | 具体行为 |
 |---|---|
-| `rewritten_query_and_itemnames.prompt` | 多轮指代消解、主题抽取和检索问题改写；主观偏好问题转换为可由资料验证的选择依据 |
-| `hyde_prompt.prompt` | 生成检索扩展文本，不直接回答问题，不虚构精确事实 |
-| `answer_out.prompt` | 阅读候选正文、处理不同证据质量并生成逐项带 `[n]` 引用的答案 |
-| `summary_map.prompt` | 从长文档局部片段提取可引用事实，避免以局部代替全局 |
-| `summary_reduce.prompt` | 合并分段摘要，保留冲突、范围、版本和引用 |
-| `compress.prompt` | 在字符预算内压缩证据，同时保留数字、单位、否定、条件和对象关系 |
-| `image_summary.prompt` | 以图片为主证据生成单行客观摘要，无法识别时明确返回固定提示 |
-| `item_name_recognition.prompt` | 从标题和正文识别文档级规范主题名称 |
-| `product_recognition_system.prompt` | 约束文档主题识别模型只返回单行名称或空字符串 |
+| 用户 → API | 提交问题、资料范围与会话标识；API 校验范围并生成本轮 `run_id`。 |
+| API → 主题规划 | 读取本会话历史，提取辅助召回主题并判断是否需要全文综合，保留用户原问题。 |
+| 规划 → 文档上下文 | 显式所选文档已完成导入、切片完整且总正文不超过预算时，直接交给回答节点；该路径要求关闭联网且未进入全文总结。 |
+| 常规检索 → RRF | 原问题和 HyDE 分别执行混合召回，再按排名融合本地候选。 |
+| RRF / 可选网页 → 重排 | 合并候选、重排与去重；指定文档时补充同章节邻居。 |
+| 全文总结 → 回答 | 全文任务使用短文档综合或长文档 Map/Reduce，保留来源关联。 |
+| 上下文 → 回答模型 | 同时提供当前问题、最近历史和正文。资料事实带引用；无依据时允许带“AI 通识回答”标识的无引用回答。 |
+| 回答 → 用户 / MongoDB | 校验引用与图片、整理来源并保存消息；流式生成发送 `delta`，最终用 `final` 返回完整结果。 |
 
-所有用户输入、历史消息、检索来源、文档文本和图片上下文都按不可信数据处理。回答模型必须阅读正文，不能把重排分数当作事实判断：合格证据正常回答，低置信候选可以在正文确实支持时谨慎使用；只能部分回答时标明缺失部分，完全无依据时返回“当前资料中没有足够信息”。
+`session_id` 关联多轮历史，`run_id` 隔离单次执行与 SSE 事件。流式答案从生成节点开始输出，之前的检索过程可在工作台查看进度。
 
-## 评测结果
+<details>
+<summary>检索与上下文参数</summary>
 
-2026-08-17 使用仓库自带的两份原创合成 Markdown 评测夹具，并在自建集 `selfbuilt_zh_qa_v2` 上完成 14 条端到端评测：
+默认值来自 [retrieval_config.py](app/conf/retrieval_config.py)，可在环境变量中调整。
 
-| 指标 | 结果 |
-|---|---:|
-| 来源命中率 | **100%（12/12）** |
-| 可回答准确率 | **100%（12/12）** |
-| 不可回答拒答率 | **100%（2/2）** |
-| 请求失败率 | **0%（0/14）** |
-| 平均延迟 | **7.26 秒** |
-| P50 / P95 / P99 | **7.54 / 9.22 / 9.29 秒** |
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `CHUNK_SIZE_TOKENS` / `CHUNK_OVERLAP_TOKENS` | 500 / 80 | 近似 token 切分预算与重叠 |
+| `RETRIEVAL_TOP_K` | 20 | 每次常规混合召回上限 |
+| `TOPIC_EXPANSION_TOP_K` | 10 | 主题补充召回上限 |
+| `RRF_TOP_K` / `RERANK_INPUT_TOP_K` | 30 / 30 | 融合输出与本地重排候选上限 |
+| `RERANK_MAX_TOP_K` | 8 | 邻居扩展前的证据数量上限 |
+| `RERANK_MIN_TOP_K` | 2 | 断崖截断的最低保留目标，不会补造候选 |
+| `RERANK_MIN_SCORE` | 0.09 | 相关性分级阈值 |
+| `RERANK_FALLBACK_TOP_K` | 8 | 低分候选兜底上限 |
+| `DIRECT_DOCUMENT_MAX_CHARS` | 64000 | 所选文档全部切片正文的字符预算，并非模型 token 上限 |
+| `NEIGHBOR_EXPAND_PARTS` | 1 | 重排锚点前后同章节邻居数量 |
 
-运行自建评测：
+</details>
 
-```powershell
-.\.venv\Scripts\python.exe eval\run_eval.py
+## API 与代码导航
+
+导入服务运行在 `:8000`，查询服务运行在 `:8001`。完整请求结构见启动后的 FastAPI `/docs`。
+
+| 接口 | 用途 |
+|---|---|
+| `POST :8000/knowledge-bases` | 创建知识库 |
+| `POST :8000/upload` | 上传文件，返回导入任务标识 |
+| `GET :8000/status/{task_id}` | 查看导入进度 |
+| `POST :8001/query` | 发起问答，支持非流式和流式模式 |
+| `GET :8001/query/stream/{run_id}` | 订阅 SSE |
+| `GET :8001/history/{session_id}` | 读取会话历史 |
+| `DELETE :8001/history/{session_id}/messages/{message_id}` | 删除单条消息 |
+| `DELETE :8001/history/{session_id}` | 清空会话历史 |
+
+学习实现时可以按以下顺序阅读：
+
+1. [导入图](app/import_process/agent/main_graph.py)：格式分流、解析、切分、主题识别与向量入库。
+2. [查询图](app/query_process/agent/main_graph.py)：全文上下文、并行检索与生成编排。
+3. [检索工具](app/query_process/agent/retrieval_utils.py)、[RRF](app/query_process/agent/nodes/node_rrf.py) 与 [重排节点](app/query_process/agent/nodes/node_rerank.py)：范围过滤、候选融合与邻居扩展。
+4. [回答节点](app/query_process/agent/nodes/node_answer_output.py) 与 [Prompt](prompts/)：原问题、历史、正文与引用如何交给模型。
+5. [查询 API](app/query_process/api/server.py)：工作台、会话管理和 SSE。
+
+## 开发与评测
+
+本机开发使用 Python 3.11+ 和 `uv`，环境变量模板见 [.env.example](.env.example)。
+
+```bash
+uv sync --frozen
+uv run --no-sync python test/16_node_rerank.py
+uv run --no-sync python test/18_node_answer_output.py
+uv run --no-sync python test/19_workspace_features.py
+uv run --no-sync python test/20_rag_reliability.py
+uv run --no-sync python test/21_reliability_hardening.py
 ```
 
-复用已经完成导入的知识库：
+[GitHub Actions](.github/workflows/ci.yml) 配置了离线回归、Python 编译检查与 Dockerfile 检查；主分支推送和手动运行还包含镜像构建。最新执行结果见 [Actions](https://github.com/Pitkil/PunditRAG/actions)。
 
-```powershell
-$env:EVAL_KB_ID = "<existing-kb-id>"
-.\.venv\Scripts\python.exe eval\run_eval.py
+评测包含 [自建固定集](eval/run_eval.py) 和 RGB、CRUD-RAG、MTRAG 适配器。准备好本地服务与模型凭据后运行：
+
+```bash
+uv run --no-sync python eval/run_eval.py
 ```
 
-结果保存在 `eval/results/result_selfbuilt_qa.json`。详细评测口径、官方数据集适配和历史结果边界见 [eval/README.md](eval/README.md)。
+数据来源、运行方法及历史抽样成绩见 [评测文档](eval/README.md)。其中公开数据集成绩记录于 2026-08-17，属于当时版本的抽样结果；本次 README 调整没有重新运行评测。
 
-> 100% 仅代表当前 14 条自建回归集，不代表生产环境准确率。RGB、CRUD-RAG、MTRAG 新版正式评测尚未完成，不能与旧结果混用。
+## 部署说明
 
-## 测试
+文档嵌入与重排在本地执行；问题、候选正文以及相关历史会发送给配置的 LLM 服务。PDF 发送给 MinerU 解析，图片摘要使用配置的视觉模型。联网补充默认关闭，目前使用独立配置的 DashScope Web Search MCP，不随 LLM Base URL 自动切换。
 
-当前离线回归测试共 `45/45` 通过，其中包含共享 BGE-M3 模型并发编码、主观偏好问题证据化改写、低分候选传递、无效图片区块清理和 9 个 Prompt 渲染契约测试。
+当前工作台适合本地或可信网络部署。对外提供服务时应先配置身份认证与访问控制，详见 [安全说明](SECURITY.md)。
 
-```powershell
-$tests = @(
-  "16_node_rerank.py",
-  "17_text_compress_utils.py",
-  "18_node_answer_output.py",
-  "19_workspace_features.py",
-  "20_rag_reliability.py",
-  "21_reliability_hardening.py"
-)
+## 贡献与许可
 
-foreach ($test in $tests) {
-  .\.venv\Scripts\python.exe (Join-Path "test" $test)
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
+欢迎通过 [Issues](https://github.com/Pitkil/PunditRAG/issues) 分享使用反馈，也欢迎提交文档、测试与功能改进。开发约定见 [贡献指南](CONTRIBUTING.md)，版本变化见 [更新日志](CHANGELOG.md)。
 
-.\.venv\Scripts\python.exe -m compileall -q app eval test
-git diff --check
-```
-
-测试覆盖重排截断与低置信回退、来源引用、知识库范围、Prompt 契约、上传安全、会话状态、摘要路由、文档删除和密集技术指标切分等关键行为。
-
-## 安全与可靠性
-
-- 上传文件名经过规范化，阻止路径穿越。
-- 上传采用分块写入，并限制单文件大小和单次文件数量。
-- CORS 使用显式白名单，不接受任意 Origin。
-- 未知知识库 ID 返回 `404`，内部查询错误返回 `500`。
-- MinIO Bucket 默认私有，通过受控资源接口访问。
-- Prompt 将用户输入、历史、来源、文档和图片上下文统一标记为不可信数据，忽略角色覆盖、命令执行、伪造引用、输出协议覆盖和提示词泄露指令。
-- 型号、编号、数字、日期和标准代号必须逐字来自引用证据。
-- 资料只支持部分问题时回答可验证部分并标明缺口，不用模型常识补齐；冲突资料分别陈述，不强行合并。
-- 重排阈值用于证据分级而非替回答模型作最终判断；低分但已召回的候选会被限制数量后交由回答模型逐条核验。
-- 无显式 `kb_ids` 时不扫描全部知识库。
-- 评测使用独立运行会话，并对临时 `429/502/503/504` 执行有限重试。
-
-当前 API 未实现用户认证和租户权限隔离。部署到公网前必须增加认证、授权、TLS、密钥管理、速率限制和审计日志。
-
-## 项目结构
-
-```text
-PunditRAG/
-├── app/
-│   ├── import_process/       # 文档导入图与 :8000 API
-│   ├── query_process/        # 查询图、工作台与 :8001 API
-│   ├── clients/              # MongoDB、Milvus、MinIO 客户端
-│   ├── conf/                 # 模型、检索和服务配置
-│   ├── llm/                  # LLM、Embedding、Reranker 工具
-│   └── utils/                # SSE、任务和通用工具
-├── prompts/                  # 查询理解、HyDE、回答与摘要 Prompt
-├── eval/                     # 自建及公开数据集评测
-├── test/                     # 回归测试
-├── eval/datasets/documents/   # 可再分发的原创合成评测夹具
-├── docker-compose.yml        # 应用与依赖服务编排
-├── Dockerfile
-├── start.ps1                 # Windows 一键启动
-└── README.md
-```
-
-## 参与贡献
-
-欢迎提交 Issue 和 Pull Request。开发约定、测试命令和 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请遵循 [SECURITY.md](SECURITY.md) 中的私密报告流程。版本变化记录在 [CHANGELOG.md](CHANGELOG.md)。
-
-## 许可证
-
-本项目使用 [MIT License](LICENSE)。你可以使用、修改、分发和商用本项目，但必须在副本或主要部分中保留原版权声明和许可证文本。
-
-第三方模型、数据集、文档和服务分别遵循其各自的许可证与使用条款，不因本项目采用 MIT License 而自动转为 MIT 授权。RGB、CRUD-RAG 和 MTRAG 的原始数据不会随仓库分发，详见 [eval/THIRD_PARTY_DATA.md](eval/THIRD_PARTY_DATA.md)。
-
-## 开源状态
-
-PunditRAG 的当前代码快照已经具备 MIT License、贡献指南、安全策略、变更日志、脱敏环境变量示例、第三方数据说明、可复现测试和评测入口，可以作为 **Alpha / Developer Preview** 公开展示，供学习、研究、二次开发和受控环境试用。
-
-“可开源”不等于“生产就绪”。当前版本尚未实现用户认证、租户隔离、细粒度知识库授权和完整审计，也未完成大规模正式公开基准、并发压测、长时间稳定性测试及容量规划，因此不应直接暴露到公网或宣称具备生产级可靠性。
-
-正式创建公开仓库前还应完成以下发布检查：
-
-- 从干净快照创建公开仓库，或清理历史中曾提交的 `eval/raw/` 与生成物；仅新增 `.gitignore` 不能缩小既有 Git 历史。
-- 统一根 README 与 `eval/README.md` 的评测口径，明确哪些结果属于当前代码和当前 Prompt，哪些只是旧实验记录。
-- 增加持续集成，在无外部服务的环境中自动执行离线回归、编译检查和基础静态检查。
-- 在 `SECURITY.md` 中提供可实际使用的私密安全联系方式或启用 GitHub Private Vulnerability Reporting。
-
-## 限制与后续工作
-
-- 当前自建集只有 14 条，需要扩展为更大规模、分领域、人工复核的数据集。
-- 需要完成新版 RGB、CRUD-RAG、MTRAG 正式评测和 Dense/Sparse/HyDE/RRF/Reranker 消融实验。
-- 尚未完成并发压测、长时间稳定性测试、故障注入和容量规划。
-- PDF 导入依赖 MinerU 服务，外部网络或服务异常可能导致解析失败。
-- 首次模型下载与 GPU 显存需求较高，CPU 可运行但延迟会明显增加。
-- 当前没有用户认证、租户隔离和细粒度知识库授权，不应直接暴露到公网。
-- 当前测试以独立脚本为主，尚未形成标准 `pytest` 测试发现、覆盖率门槛和 CI 检查。
-- 任务进度和 SSE 队列保存在进程内存中，只适合当前单进程部署；扩展为多个应用实例或 worker 前需要迁移到 Redis 等共享存储。
-- 同一会话可以并发发起多个独立 `run_id`，但消息历史没有会话级串行化或乐观锁，并发回答的落库顺序可能与提问顺序不同。
+项目采用 [MIT License](LICENSE)。第三方模型、服务和数据集遵循各自许可；示例资料与公开数据来源见 [第三方数据说明](eval/THIRD_PARTY_DATA.md)。
