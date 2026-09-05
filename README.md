@@ -201,6 +201,16 @@ MONGO_URL=mongodb://punditrag:your-password@mongo:27017/kb002?authSource=admin
 MINIO_SECRET_KEY=your-password
 ```
 
+项目通过 `ChatOpenAI` 使用 OpenAI-compatible 接口，可接入 OpenAI、DeepSeek、OrcaRouter、OpenRouter、SiliconFlow、火山方舟以及本地 vLLM/Ollama 网关。以 OrcaRouter 为例：
+
+```dotenv
+OPENAI_API_KEY=sk-orca-...
+OPENAI_BASE_URL=https://api.orcarouter.ai/v1
+LLM_DEFAULT_MODEL=openai/gpt-4o-mini
+```
+
+模型名称按服务商文档填写；服务商专属请求体可通过 `OPENAI_EXTRA_BODY_JSON` 传入 JSON 对象。不要把真实密钥提交到仓库。
+
 同时设置 `MONGO_ROOT_PASSWORD`、`MINIO_ROOT_PASSWORD` 和 `MILVUS_MINIO_ROOT_PASSWORD`。`MONGO_URL`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY` 必须与对应服务凭据一致。不要在公开仓库中提交真实密钥。
 
 如果你已经有旧版 `.env.docker`，请对照最新的 `.env.docker.example` 补齐 8 个服务凭据变量；启动脚本会拒绝缺失或仍为示例占位符的配置。
