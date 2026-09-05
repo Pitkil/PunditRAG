@@ -1,8 +1,25 @@
+<div align="center">
+
 # PunditRAG
 
-面向中文技术资料的可追溯 RAG 知识库系统。PunditRAG 将文档解析、结构化切分、混合检索、HyDE、RRF、重排、引用生成和可复现评测串成一条完整链路，并提供可直接使用的知识库工作台与 REST API。
+**面向中文技术资料的可追溯 RAG 知识库系统**
 
-> 当前重点不是“让模型尽量回答”，而是让回答能够被检索、引用和评测：没有足够证据时拒绝作答，型号、编号、数值和日期必须来自引用来源。
+文档导入 · 多路混合检索 · 证据重排 · 流式回答 · 引用治理
+
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-1C3C3C)](https://github.com/langchain-ai/langgraph)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![OpenAI Compatible](https://img.shields.io/badge/LLM-OpenAI--compatible-412991)](#配置说明)
+
+[中文](README.md) · [English](README.en.md) · [快速开始](#快速开始) · [架构](#系统架构)
+
+</div>
+
+<p align="center"><img src="docs/assets/punditrag-hero.png" alt="PunditRAG 学术风格首页示意图" width="100%"></p>
+
+PunditRAG 面向“导入资料后直接提问”的真实使用场景：把用户问题、检索证据和对话历史交给回答模型，同时对范围、引用和输出进行治理。它适合技术手册、论文、标准、产品资料和团队知识库的本地部署与二次开发。
+
+> 设计原则：让模型阅读证据，而不是猜测证据。型号、编号、数值和日期优先逐字来自检索内容；证据不足时明确说明缺口。
 
 ## 目录
 
@@ -24,6 +41,29 @@
 - [限制与后续工作](#限制与后续工作)
 
 ## 核心能力
+
+## 为什么是 PunditRAG
+
+| 优势 | 解决的问题 | 实现方式 |
+|---|---|---|
+| 多路召回 | 单一向量检索容易漏掉术语、编号和表格字段 | 原问题 Dense + Sparse、HyDE Dense + Sparse 并行召回 |
+| 稠密 + 稀疏互补 | 语义相似不等于关键词命中，精确型号也不能只靠语义 | BGE-M3 同时生成稠密向量和稀疏向量，分别捕获语义与词项匹配 |
+| RRF 融合 | 不同召回通道分数不可直接比较 | Reciprocal Rank Fusion 按排名融合，降低单一路径偏差 |
+| 多语言重排 | 召回结果多但相关性层次不清 | BGE Reranker 对问题—证据对重新评分并断崖式截断 |
+| 可追溯回答 | RAG 容易出现“看似合理但来源不明”的答案 | 引用编号白名单、越界引用拦截、跨来源去重 |
+| 范围可控 | 多知识库环境中容易串库 | 显式 `kb_ids` / `document_ids` 过滤，不隐式扫描全部资料 |
+
+### 多路混合检索详解
+
+一次普通问答会并行生成多组候选：
+
+1. **原问题检索**：保留用户原话，用 BGE-M3 的稠密向量捕获语义相近片段，同时用稀疏向量命中型号、缩写、编号和专有名词。
+2. **HyDE 检索**：模型先生成一段仅用于检索扩展的假设性文本，再对该文本执行同样的 Dense + Sparse 检索，补足用户问题与原文表述不同造成的召回损失。
+3. **主题扩展**：已识别的文档主题只作为额外召回入口，不作为硬过滤条件，避免主题识别错误导致零召回。
+4. **RRF 融合**：将原问题和 HyDE 的排名列表合并，保留多路都出现或单路排名靠前的候选。
+5. **重排与邻居补齐**：Reranker 以用户原问题和候选正文重新计算相关性；最终锚点确定后，再补充同章节相邻切片，恢复表格、定义和上下文的连续性。
+
+稠密检索擅长“意思相近”，稀疏检索擅长“字面精确”；两者并行再用 RRF 融合，比单独依赖某一种分数更适合中文技术资料。
 
 ### 文档导入
 
@@ -56,6 +96,10 @@
 - 自建集及 RGB、CRUD-RAG、MTRAG 评测适配器。
 
 ## 系统架构
+
+<p align="center"><img src="docs/assets/punditrag-architecture.png" alt="PunditRAG 文档导入、检索与回答架构" width="100%"></p>
+
+上图是面向读者的总览；代码级节点、数据存储和每条箭头的具体含义见下方 Mermaid 图与对话处理过程。
 
 ```mermaid
 flowchart LR
@@ -110,6 +154,8 @@ flowchart LR
 ```
 
 ## 对话处理过程
+
+<p align="center"><img src="docs/assets/punditrag-workflow.png" alt="PunditRAG 查询处理流程" width="100%"></p>
 
 一次对话同时使用两个标识：`session_id` 表示可持续多轮的会话，负责关联历史消息；`run_id` 表示单次请求，负责隔离任务状态、节点追踪和 SSE 事件。即使同一会话连续发起查询，每轮也有独立的 `run_id`。
 
@@ -173,6 +219,12 @@ sequenceDiagram
 | Reranker 未就绪且包含本地候选 | 本轮查询失败并记录错误，不静默跳过精排 |
 | 已召回但得分低 | 传递少量低置信候选，不在排序节点武断拒答 |
 | 全部召回为空 | 不调用证据生成链路，直接返回无资料提示 |
+
+## 界面预览
+
+| 知识库工作台 | 执行轨迹与来源 |
+|---|---|
+| ![工作台](docs/assets/punditrag-workbench.png) | ![执行轨迹](docs/assets/punditrag-trace.png) |
 
 ## 快速开始
 
